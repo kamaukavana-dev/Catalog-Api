@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+
+    <!-- Local development: human-readable with color -->
+    <springProfile name="local,default">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>
+                    %d{HH:mm:ss.SSS} [%thread] %-5level %logger{36}
+                    [traceId=%X{traceId:-} spanId=%X{spanId:-}] - %msg%n
+                </pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+        <logger name="com.catalog" level="DEBUG"/>
+        <logger name="org.hibernate.SQL" level="WARN"/>
+        <logger name="org.springframework.data.redis.core.RepositoryConfigurationExtensionSupport" level="ERROR"/>
+    </springProfile>
+
+    <!-- Production: structured JSON for log aggregation (ELK, Datadog, CloudWatch) -->
+    <!-- logstash-logback-encoder auto-captures MDC fields (traceId, spanId, requestId) -->
+    <springProfile name="prod">
+        <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <!-- Always present fields -->
+                <customFields>{"service":"catalog-api","environment":"prod"}</customFields>
+
+                <!-- Include MDC fields: traceId, spanId, requestId, productId, etc. -->
+                <includeMdcKeyName>traceId</includeMdcKeyName>
+                <includeMdcKeyName>spanId</includeMdcKeyName>
+                <includeMdcKeyName>requestId</includeMdcKeyName>
+                <includeMdcKeyName>userId</includeMdcKeyName>
+                <includeMdcKeyName>productId</includeMdcKeyName>
+                <includeMdcKeyName>variantId</includeMdcKeyName>
+                <includeMdcKeyName>warehouseId</includeMdcKeyName>
+
+                <!-- Never log thread name — too noisy in async env -->
+                <includeContext>false</includeContext>
+
+                <!-- Performance: shorter stack traces -->
+                <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+                    <maxDepthPerThrowable>20</maxDepthPerThrowable>
+                    <maxLength>2048</maxLength>
+                    <rootCauseFirst>true</rootCauseFirst>
+                </throwableConverter>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+        </root>
+        <logger name="org.hibernate.SQL" level="WARN"/>
+    </springProfile>
+
+</configuration>
+

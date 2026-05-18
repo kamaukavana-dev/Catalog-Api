@@ -1,0 +1,41 @@
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 20
+        failure-rate-threshold: 50          # Open at 50% failure rate
+        wait-duration-in-open-state: 30s    # Stay open for 30s before half-open
+        permitted-number-of-calls-in-half-open-state: 5
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+
+    instances:
+      redis:
+        base-config: default
+        failure-rate-threshold: 40
+        wait-duration-in-open-state: 10s   # Redis recovers fast
+
+      object-storage:
+        base-config: default
+        failure-rate-threshold: 60         # Storage is more reliable; tolerate more before opening
+        wait-duration-in-open-state: 60s   # Storage recovery is slower
+
+  retry:
+    configs:
+      default:
+        max-attempts: 3
+        wait-duration: 500ms
+        retry-exceptions:
+          - java.io.IOException
+          - software.amazon.awssdk.core.exception.SdkClientException
+
+  timelimiter:
+    configs:
+      default:
+        timeout-duration: 5s
+
+    instances:
+      object-storage:
+        timeout-duration: 10s   # Storage operations can legitimately be slower
+

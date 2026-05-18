@@ -1,0 +1,28 @@
+spring:
+  jpa:
+    show-sql: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: never
+      show-components: never
+
+logging:
+  level:
+    root: INFO
+    com.catalog: INFO
+
+server:
+  forward-headers-strategy: framework
+  error:
+    include-message: never
+
+catalog:
+  security:
+    require-api-key: ${CATALOG_REQUIRE_API_KEY:true}
+    api-keys: ${CATALOG_API_KEYS:}
