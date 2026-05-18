@@ -1,0 +1,12 @@
+spring:
+  jpa:
+    show-sql: false # Disable basic SQL logging; P6Spy handles it
+    properties:
+      hibernate:
+        format_sql: false # P6Spy has its own formatter
+
+logging:
+  level:
+    root: INFO
+    com.catalog: DEBUG
+    org.springframework.data.repository.config.RepositoryConfigurationExtensionSupport: WARN

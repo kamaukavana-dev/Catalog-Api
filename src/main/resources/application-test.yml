@@ -1,0 +1,36 @@
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+catalog:
+  storage:
+    bucket: test-bucket
+    endpoint: http://localhost:9000
+    region: us-east-1
+    access-key: test-access
+    secret-key: test-secret
+    base-url: http://localhost:9000/test-bucket
+  security:
+    require-api-key: false
+    api-keys: ""
+
+logging:
+  level:
+    root: INFO
+    com.catalog: DEBUG
+    org.flywaydb: INFO
