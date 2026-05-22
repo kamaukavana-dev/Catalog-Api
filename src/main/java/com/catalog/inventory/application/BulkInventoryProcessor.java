@@ -51,6 +51,21 @@ public class BulkInventoryProcessor {
                 inventoryMetrics.recordBulkRow(false);
                 log.warn("Bulk import row {} failed: sku={} warehouse={}: {}",
                         absoluteRow, row.variantSku(), row.warehouseCode(), e.getMessage());
+
+                // Defensive behavior: once a row fails, stop applying further changes.
+                // Mark remaining rows in this batch as failed without processing them.
+                for (int j = i + 1; j < batch.size(); j++) {
+                    BulkInventoryService.AdjustmentRow skipped = batch.get(j);
+                    int skippedRow = rowOffset + j + 2;
+                    errors.add(new BulkInventoryService.RowError(
+                            skippedRow,
+                            skipped.variantSku(),
+                            skipped.warehouseCode(),
+                            "Skipped due to previous row failure"
+                    ));
+                    inventoryMetrics.recordBulkRow(false);
+                }
+                break;
             }
         }
 

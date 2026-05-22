@@ -18,3 +18,16 @@ This file records defensive, production-safe decisions made autonomously during 
 * Decision: Interpret “adjust stock DOWN” test requirements as using `AdjustStockRequest.AdjustmentType.RECONCILE` to a lower absolute quantity (including zero).
 * Why: `InventoryService.adjustStock()` supports only `RECEIVE` and `RECONCILE`; there is no decrement operation type. Reconcile is the safest supported way to reduce quantity.
 * Alternative considered: Drive “DOWN” via reservations/sales or transfers; rejected for this class because the requirements explicitly reference `adjustStock(...)`.
+
+## 2026-05-22 — Bulk Import Semantics
+
+* Decision: Make bulk inventory imports fail-fast after the first row error, marking all remaining rows as failed without applying further inventory/journal changes.
+* Why: For ERP-driven bulk adjustments, partial application after a detected data error increases reconciliation risk. Fail-fast keeps the import outcome predictable and easier to remediate.
+* Alternatives considered:
+  * Continue processing independent rows after an error: rejected for this codebase because the requested acceptance criteria expects rows 76-150 to fail after row 76 is invalid.
+
+* Decision: Use `IN_PROGRESS` as the in-flight bulk import job status (while remaining backward compatible with legacy `PROCESSING` in DB constraints).
+* Why: Required by the test/contract expectations and clearer than `PROCESSING` for external clients.
+
+* Decision: Dispatch bulk import work via an AFTER_COMMIT application event listener.
+* Why: Publishing async work from inside the submission transaction can run before the job row is committed, causing status updates to be dropped (job appears to jump from PENDING directly to COMPLETED).

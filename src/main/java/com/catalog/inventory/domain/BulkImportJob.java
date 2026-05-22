@@ -56,7 +56,8 @@ public class BulkImportJob extends BaseEntity {
     }
 
     public void markProcessing() {
-        this.status = "PROCESSING";
+        // Prefer IN_PROGRESS for the API contract; keep DB compatible with legacy PROCESSING.
+        this.status = "IN_PROGRESS";
     }
 
     public void complete(int processed, int failed, String errors) {
@@ -77,4 +78,3 @@ public class BulkImportJob extends BaseEntity {
         this.completedAt = Instant.now();
     }
 }
-
