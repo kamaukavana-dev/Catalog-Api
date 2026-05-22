@@ -1,5 +1,7 @@
 package com.catalog.common.security;
 
+import com.catalog.common.response.ErrorResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -13,6 +15,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.util.Arrays;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -30,15 +33,18 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
     private final boolean requireApiKey;
     private final Set<String> allowedKeys;
+    private final ObjectMapper objectMapper;
 
     public ApiKeyAuthFilter(
             @Value("${catalog.security.require-api-key:false}") boolean requireApiKey,
-            @Value("${catalog.security.api-keys:}") String apiKeysCsv) {
+            @Value("${catalog.security.api-keys:}") String apiKeysCsv,
+            ObjectMapper objectMapper) {
         this.requireApiKey = requireApiKey;
         this.allowedKeys = Arrays.stream(apiKeysCsv.split(","))
                 .map(String::trim)
                 .filter(v -> !v.isBlank())
                 .collect(Collectors.toSet());
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -54,14 +60,29 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         if (apiKey == null || apiKey.isBlank() || !allowedKeys.contains(apiKey.trim())) {
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-            response.getWriter().write("""
-                {"status":401,"error":"Unauthorized",
-                 "message":"Missing or invalid API key."}
-                """);
+            writeErrorResponse(request, response,
+                    HttpStatus.UNAUTHORIZED.value(),
+                    "Unauthorized",
+                    "Missing or invalid API key.");
             return;
         }
 
         chain.doFilter(request, response);
+    }
+
+    private void writeErrorResponse(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    int status,
+                                    String error,
+                                    String message) throws IOException {
+        ErrorResponse body = ErrorResponse.builder()
+                .status(status)
+                .error(error)
+                .message(message)
+                .path(request.getRequestURI())
+                .timestamp(Instant.now())
+                .build();
+        response.getWriter().write(objectMapper.writeValueAsString(body));
     }
 
     private boolean isSafeMethod(String method) {
@@ -73,4 +94,3 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         return path != null && path.startsWith("/api/");
     }
 }
-

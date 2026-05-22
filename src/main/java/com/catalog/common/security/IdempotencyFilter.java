@@ -1,5 +1,6 @@
 package com.catalog.common.security;
 
+import com.catalog.common.response.ErrorResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -15,6 +16,7 @@ import org.springframework.web.util.ContentCachingResponseWrapper;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Instant;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Objects;
@@ -26,15 +28,15 @@ import java.util.Objects;
  * First request: process and cache response for 24 hours
  * Duplicate request: return cached response immediately
  *
- * Prevents duplicate product creation, double charges, duplicate reservations
- * when clients retry on network timeout.
- *
- * Applies ONLY to POST requests (mutations that create resources).
- * PUT/PATCH operations are inherently idempotent by REST semantics.
- *
- * Note: Idempotency keys are per-client (use Auth header as namespace in secured endpoints).
- * Currently namespace is global — acceptable before Spring Security phase.
- */
+     * Prevents duplicate product creation, double charges, duplicate reservations
+     * when clients retry on network timeout.
+     *
+     * Enforced for mutation endpoints: POST/PUT/PATCH/DELETE under /api/.
+     * If X-Idempotency-Key is missing, the request is rejected with HTTP 400.
+     *
+     * Note: Idempotency keys are per-client (use Auth header as namespace in secured endpoints).
+     * Currently namespace is global — acceptable before Spring Security phase.
+     */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -52,15 +54,15 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request,
                                      HttpServletResponse response,
                                      FilterChain chain) throws ServletException, IOException {
-        // Only applies to POST requests with an idempotency header
-        if (!"POST".equals(request.getMethod())) {
+        // Only applies to mutation endpoints
+        if (!isMutationRequest(request) || !isApiPath(request)) {
             chain.doFilter(request, response);
             return;
         }
 
         String idempotencyKey = request.getHeader(IDEMPOTENCY_HEADER);
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
-            chain.doFilter(request, response);
+            respondMissingKey(request, response);
             return;
         }
 
@@ -73,7 +75,7 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         IdempotencyRecord cachedResponse = getCachedResponse(cacheKey);
         if (cachedResponse != null) {
             if (!Objects.equals(cachedResponse.requestHash(), requestHash)) {
-                respondConflict(response);
+                respondConflict(request, response);
                 return;
             }
             log.debug("Idempotency hit: key={}", idempotencyKey);
@@ -117,6 +119,16 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         responseWrapper.copyBodyToResponse();
     }
 
+    private boolean isApiPath(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        return path != null && path.startsWith("/api/");
+    }
+
+    private boolean isMutationRequest(HttpServletRequest request) {
+        String method = request.getMethod();
+        return "POST".equals(method) || "PUT".equals(method) || "PATCH".equals(method) || "DELETE".equals(method);
+    }
+
     private IdempotencyRecord getCachedResponse(String key) {
         try {
             String cached = redisTemplate.opsForValue().get(key);
@@ -151,13 +163,35 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         return CACHE_PREFIX + request.getMethod() + ":" + request.getRequestURI() + ":" + authHash + ":" + idempotencyKey;
     }
 
-    private void respondConflict(HttpServletResponse response) throws IOException {
-        response.setStatus(HttpServletResponse.SC_CONFLICT);
+    private void respondMissingKey(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        writeErrorResponse(request, response,
+                HttpServletResponse.SC_BAD_REQUEST,
+                "Bad Request",
+                "Missing required header: " + IDEMPOTENCY_HEADER + ".");
+    }
+
+    private void respondConflict(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        writeErrorResponse(request, response,
+                HttpServletResponse.SC_CONFLICT,
+                "Idempotency Conflict",
+                "Idempotency key was reused with a different request payload.");
+    }
+
+    private void writeErrorResponse(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    int status,
+                                    String error,
+                                    String message) throws IOException {
+        response.setStatus(status);
         response.setContentType("application/json");
-        response.getWriter().write("""
-            {"status":409,"error":"Idempotency Conflict",
-             "message":"Idempotency key was reused with a different request payload."}
-            """);
+        ErrorResponse body = ErrorResponse.builder()
+                .status(status)
+                .error(error)
+                .message(message)
+                .path(request.getRequestURI())
+                .timestamp(Instant.now())
+                .build();
+        response.getWriter().write(objectMapper.writeValueAsString(body));
     }
 
     private String sha256(String value) {

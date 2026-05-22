@@ -13,7 +13,6 @@ import com.catalog.inventory.api.dto.response.TransferResponse;
 import com.catalog.inventory.application.InventoryService;
 import com.catalog.inventory.application.InventoryTransferService;
 import com.catalog.inventory.domain.InventoryJournal;
-import com.catalog.inventory.infrastructure.InventoryJournalRepository;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +22,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URI;
 import java.util.List;
 import java.util.UUID;
 
@@ -32,12 +32,17 @@ public class InventoryController {
 
     private final InventoryService inventoryService;
     private final InventoryTransferService transferService;
-    private final InventoryJournalRepository journalRepository;
 
     @PostMapping("/api/v1/inventory")
     public ResponseEntity<ApiResponse<InventoryResponse>> createInventory(@Valid @RequestBody CreateInventoryRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(ApiResponse.success("Inventory created", inventoryService.createInventory(request)));
+        InventoryResponse created = inventoryService.createInventory(request);
+        return ResponseEntity.created(URI.create("/api/v1/inventory/" + created.id()))
+                .body(ApiResponse.success("Inventory created", created));
+    }
+
+    @GetMapping("/api/v1/inventory/{id}")
+    public ResponseEntity<ApiResponse<InventoryResponse>> getInventoryById(@PathVariable UUID id) {
+        return ResponseEntity.ok(ApiResponse.success(inventoryService.getInventoryById(id)));
     }
 
     @GetMapping("/api/v1/variants/{variantId}/inventory")
@@ -76,7 +81,7 @@ public class InventoryController {
     @PostMapping("/api/v1/inventory/transfers")
     public ResponseEntity<ApiResponse<TransferResponse>> transfer(
             @Valid @RequestBody TransferStockRequest request) {
-        return ResponseEntity.ok(ApiResponse.success("Transfer completed",
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.success("Transfer accepted",
                 transferService.transfer(request)));
     }
 
@@ -85,8 +90,7 @@ public class InventoryController {
             @PathVariable UUID inventoryId,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") @Max(200) int size) {
-        Page<InventoryJournal> journal = journalRepository.findByInventoryId(
-                inventoryId, PageRequest.of(page, size));
+        Page<InventoryJournal> journal = inventoryService.getJournal(inventoryId, page, size);
         return ResponseEntity.ok(ApiResponse.success(
                 PagedResponse.of(journal.map(this::toJournalResponse))));
     }

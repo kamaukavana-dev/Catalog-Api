@@ -133,10 +133,10 @@ public class GlobalExceptionHandler {
 
         log.warn("Validation failed for request to {}: {}", request.getRequestURI(), errors);
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(ErrorResponse.builder()
-                        .status(HttpStatus.BAD_REQUEST.value())
-                        .error("Validation Failed")
+                        .status(HttpStatus.UNPROCESSABLE_ENTITY.value())
+                        .error("Unprocessable Entity")
                         .message("Request validation failed")
                         .path(request.getRequestURI())
                         .timestamp(Instant.now())
@@ -158,10 +158,10 @@ public class GlobalExceptionHandler {
                     .add(v.getMessage());
         });
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(ErrorResponse.builder()
-                        .status(HttpStatus.BAD_REQUEST.value())
-                        .error("Validation Failed")
+                        .status(HttpStatus.UNPROCESSABLE_ENTITY.value())
+                        .error("Unprocessable Entity")
                         .message("Request validation failed")
                         .path(request.getRequestURI())
                         .timestamp(Instant.now())
