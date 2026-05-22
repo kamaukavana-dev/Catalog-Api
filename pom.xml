@@ -158,17 +158,23 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>net.bytebuddy</groupId>
-            <artifactId>byte-buddy-agent</artifactId>
-            <version>1.15.11</version>
-            <scope>test</scope>
-        </dependency>
+	        <dependency>
+	            <groupId>net.bytebuddy</groupId>
+	            <artifactId>byte-buddy-agent</artifactId>
+	            <version>1.15.11</version>
+	            <scope>test</scope>
+	        </dependency>
+	        <dependency>
+	            <groupId>com.awaitility</groupId>
+	            <artifactId>awaitility</artifactId>
+	            <version>4.2.1</version>
+	            <scope>test</scope>
+	        </dependency>
 
-        <!-- Testcontainers -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-testcontainers</artifactId>
+	        <!-- Testcontainers -->
+	        <dependency>
+	            <groupId>org.springframework.boot</groupId>
+	            <artifactId>spring-boot-testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>
