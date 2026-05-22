@@ -12,6 +12,7 @@ import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVRecord;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -43,6 +44,8 @@ public class BulkInventoryService {
     private final BulkInventoryProcessor batchProcessor;
     private final ObjectMapper objectMapper;
     private final long maxFileSizeBytes;
+    private final ApplicationEventPublisher eventPublisher;
+    private final long startDelayMs;
 
     public BulkInventoryService(
             InventoryRepository inventoryRepository,
@@ -52,7 +55,9 @@ public class BulkInventoryService {
             BulkImportJobRepository importJobRepository,
             BulkInventoryProcessor batchProcessor,
             ObjectMapper objectMapper,
-            @org.springframework.beans.factory.annotation.Value("${catalog.bulk.inventory.max-file-size-bytes:10485760}") long maxFileSizeBytes) {
+            @org.springframework.beans.factory.annotation.Value("${catalog.bulk.inventory.max-file-size-bytes:10485760}") long maxFileSizeBytes,
+            ApplicationEventPublisher eventPublisher,
+            @org.springframework.beans.factory.annotation.Value("${catalog.bulk.inventory.start-delay-ms:0}") long startDelayMs) {
         this.inventoryRepository = inventoryRepository;
         this.journalRepository = journalRepository;
         this.variantRepository = variantRepository;
@@ -61,6 +66,8 @@ public class BulkInventoryService {
         this.batchProcessor = batchProcessor;
         this.objectMapper = objectMapper;
         this.maxFileSizeBytes = maxFileSizeBytes;
+        this.eventPublisher = eventPublisher;
+        this.startDelayMs = startDelayMs;
     }
 
     /**
@@ -70,13 +77,20 @@ public class BulkInventoryService {
     @Transactional
     public BulkImportJob submitImport(UUID importSessionId, MultipartFile file) {
         validateFile(file);
+        BufferedUpload buffered = bufferFile(file);
         // Idempotency check: same session ID = same job
         return importJobRepository.findByImportSessionId(importSessionId)
                 .orElseGet(() -> {
                     BulkImportJob job = BulkImportJob.create(importSessionId);
                     BulkImportJob saved = importJobRepository.save(job);
                     // Kick off async processing
-                    processAsync(saved.getId(), file);
+                    eventPublisher.publishEvent(new BulkInventoryJobSubmitted(
+                            saved.getId(),
+                            buffered.name(),
+                            buffered.originalFilename(),
+                            buffered.contentType(),
+                            buffered.bytes()
+                    ));
                     return saved;
                 });
     }
@@ -119,6 +133,13 @@ public class BulkInventoryService {
     public void processAsync(UUID jobId, MultipartFile file) {
         log.info("Bulk import starting: jobId={}", jobId);
         markProcessing(jobId);
+        if (startDelayMs > 0) {
+            try {
+                Thread.sleep(startDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
 
         try {
             List<AdjustmentRow> rows = parseCSV(file);
@@ -139,6 +160,24 @@ public class BulkInventoryService {
                 updateProgress(jobId, processedRows, allErrors.size());
                 log.debug("Bulk import progress: jobId={} batch={}/{} errors={}",
                         jobId, batchIndex + 1, batches.size(), allErrors.size());
+
+                // Fail-fast: once an error occurs, stop processing further batches.
+                if (!result.errors().isEmpty()) {
+                    // Mark all remaining rows as failed without applying them.
+                    int remainingStart = (batchIndex + 1) * BATCH_SIZE;
+                    for (int r = remainingStart; r < rows.size(); r++) {
+                        AdjustmentRow skipped = rows.get(r);
+                        int absoluteRow = r + 2; // + header row
+                        allErrors.add(new RowError(
+                                absoluteRow,
+                                skipped.variantSku(),
+                                skipped.warehouseCode(),
+                                "Skipped due to previous row failure"
+                        ));
+                    }
+                    updateProgress(jobId, processedRows, allErrors.size());
+                    break;
+                }
             }
 
             completeJob(jobId, processedRows, allErrors);
@@ -148,6 +187,25 @@ public class BulkInventoryService {
             failJob(jobId, e.getMessage());
         }
     }
+
+    private BufferedUpload bufferFile(MultipartFile file) {
+        try {
+            byte[] bytes = file.getBytes();
+            return new BufferedUpload(
+                    file.getName() == null ? "file" : file.getName(),
+                    file.getOriginalFilename() == null ? "import.csv" : file.getOriginalFilename(),
+                    file.getContentType(),
+                    bytes
+            );
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to read uploaded file bytes: " + e.getMessage(), e);
+        }
+    }
+
+    record BufferedUpload(String name, String originalFilename, String contentType, byte[] bytes) {}
+
+    public record BulkInventoryJobSubmitted(UUID jobId, String name, String originalFilename,
+                                           String contentType, byte[] bytes) {}
 
     private List<AdjustmentRow> parseCSV(MultipartFile file) {
         try (var reader = new InputStreamReader(file.getInputStream(), StandardCharsets.UTF_8)) {
