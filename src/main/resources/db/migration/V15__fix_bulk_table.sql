@@ -1,2 +1,9 @@
--- V14 already applied created_by, updated_by, deleted_at to bulk_import_jobs.
--- This migration intentionally left blank to preserve version sequence.
+-- =====================================================================
+-- NO-OP MIGRATION (2026-05-22T00:00:00+03:00)
+--
+-- This Flyway version is intentionally a no-op.
+-- Reason: A prior iteration of this project contained duplicate/overlapping
+-- schema changes across V14/V15. We preserve the version sequence here while
+-- ensuring no DDL is re-applied in environments that already ran earlier
+-- migrations.
+-- =====================================================================
