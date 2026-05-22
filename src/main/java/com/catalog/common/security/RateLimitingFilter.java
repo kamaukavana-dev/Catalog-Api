@@ -1,5 +1,7 @@
 package com.catalog.common.security;
 
+import com.catalog.common.response.ErrorResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.Refill;
@@ -14,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Instant;
 import java.time.Duration;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
@@ -40,6 +43,7 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     private static final String REDIS_PREFIX = "rate-limit:";
 
     private final RedisTokenBucketRateLimiter redisRateLimiter;
+    private final ObjectMapper objectMapper;
 
     // Bucket per client IP — bounded + expired to avoid unbounded memory growth.
     private final Cache<String, Bucket> readBuckets = Caffeine.newBuilder()
@@ -55,8 +59,9 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             .expireAfterAccess(Duration.ofMinutes(10))
             .build();
 
-    public RateLimitingFilter(RedisTokenBucketRateLimiter redisRateLimiter) {
+    public RateLimitingFilter(RedisTokenBucketRateLimiter redisRateLimiter, ObjectMapper objectMapper) {
         this.redisRateLimiter = redisRateLimiter;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -90,10 +95,25 @@ public class RateLimitingFilter extends OncePerRequestFilter {
         response.setStatus(HttpStatus.TOO_MANY_REQUESTS.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setHeader("Retry-After", "60");
-        response.getWriter().write("""
-            {"status":429,"error":"Too Many Requests",
-             "message":"Rate limit exceeded. Retry after 60 seconds."}
-            """);
+        writeErrorResponse(request, response,
+                HttpStatus.TOO_MANY_REQUESTS.value(),
+                "Too Many Requests",
+                "Rate limit exceeded. Retry after 60 seconds.");
+    }
+
+    private void writeErrorResponse(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    int status,
+                                    String error,
+                                    String message) throws IOException {
+        ErrorResponse body = ErrorResponse.builder()
+                .status(status)
+                .error(error)
+                .message(message)
+                .path(request.getRequestURI())
+                .timestamp(Instant.now())
+                .build();
+        response.getWriter().write(objectMapper.writeValueAsString(body));
     }
 
     private Bucket selectBucket(String clientKey, String path, String method) {

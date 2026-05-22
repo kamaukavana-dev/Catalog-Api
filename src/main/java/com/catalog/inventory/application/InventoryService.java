@@ -26,6 +26,8 @@ import com.catalog.warehouse.infrastructure.WarehouseRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.retry.annotation.Backoff;
 import org.springframework.retry.annotation.Retryable;
@@ -274,6 +276,16 @@ public class InventoryService {
     public InventoryResponse getInventory(UUID variantId, UUID warehouseId) {
         return toResponse(inventoryRepository.findActiveByVariantAndWarehouse(variantId, warehouseId)
                 .orElseThrow(() -> new ResourceNotFoundException("Inventory", "variant=" + variantId + ", warehouse=" + warehouseId)));
+    }
+
+    @Transactional(readOnly = true)
+    public InventoryResponse getInventoryById(UUID inventoryId) {
+        return toResponse(findActiveInventoryOrThrow(inventoryId));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<InventoryJournal> getJournal(UUID inventoryId, int page, int size) {
+        return journalRepository.findByInventoryId(inventoryId, PageRequest.of(page, size));
     }
 
     private Inventory findActiveInventoryOrThrow(UUID id) {
