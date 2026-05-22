@@ -18,6 +18,10 @@ spring:
       port: 6379
 
 catalog:
+  inventory:
+    retry-max-attempts: 30
+    retry-initial-delay-ms: 5
+    retry-multiplier: 1.2
   storage:
     bucket: test-bucket
     endpoint: http://localhost:9000

@@ -13,3 +13,8 @@ This file records defensive, production-safe decisions made autonomously during 
 * Decision: Run Docker/Git operations with elevated permissions when needed.
 * Why: Docker socket (`/var/run/docker.sock`) and `.git/` write operations are denied in the sandbox context; elevated execution is required for Testcontainers and committing incremental changes.
 
+## 2026-05-22 — Tests: InventoryService “Adjust DOWN” Interpretation
+
+* Decision: Interpret “adjust stock DOWN” test requirements as using `AdjustStockRequest.AdjustmentType.RECONCILE` to a lower absolute quantity (including zero).
+* Why: `InventoryService.adjustStock()` supports only `RECEIVE` and `RECONCILE`; there is no decrement operation type. Reconcile is the safest supported way to reduce quantity.
+* Alternative considered: Drive “DOWN” via reservations/sales or transfers; rejected for this class because the requirements explicitly reference `adjustStock(...)`.
