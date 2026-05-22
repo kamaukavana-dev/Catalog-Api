@@ -39,39 +39,36 @@ public class InventoryTransferService {
         try {
             validateTransferRequest(request);
 
-            // Load without lock first to validate existence
-            Inventory source = findInventoryOrThrow(request.sourceInventoryId());
-            Inventory destination = findInventoryOrThrow(request.destinationInventoryId());
+            // Acquire pessimistic locks in deterministic order.
+            // UUID.compareTo() provides consistent lexicographic ordering.
+            // ALWAYS lock the inventory with the smaller UUID first.
+            UUID sourceId = request.sourceInventoryId();
+            UUID destinationId = request.destinationInventoryId();
+            boolean sourceFirst = sourceId.compareTo(destinationId) < 0;
+            UUID firstLockId = sourceFirst ? sourceId : destinationId;
+            UUID secondLockId = sourceFirst ? destinationId : sourceId;
+
+            Inventory lockedFirst  = inventoryRepository.findByIdWithLock(firstLockId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Inventory", firstLockId));
+            Inventory lockedSecond = inventoryRepository.findByIdWithLock(secondLockId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Inventory", secondLockId));
+
+            // Re-assign to semantic variables after locking
+            Inventory lockedSource = sourceFirst ? lockedFirst : lockedSecond;
+            Inventory lockedDest   = sourceFirst ? lockedSecond : lockedFirst;
 
             // Validate same variant — cannot transfer between different products
-            if (!source.getVariant().getId().equals(destination.getVariant().getId())) {
+            if (!lockedSource.getVariant().getId().equals(lockedDest.getVariant().getId())) {
                 throw new BusinessRuleViolationException(
                     "Source and destination inventory must reference the same variant. " +
                     "Cannot transfer between different products.");
             }
 
             // Validate different warehouses
-            if (source.getWarehouse().getId().equals(destination.getWarehouse().getId())) {
+            if (lockedSource.getWarehouse().getId().equals(lockedDest.getWarehouse().getId())) {
                 throw new BusinessRuleViolationException(
                     "Source and destination cannot be the same warehouse.");
             }
-
-            // Acquire pessimistic locks in deterministic order.
-            // UUID.compareTo() provides consistent lexicographic ordering.
-            // ALWAYS lock the inventory with the smaller UUID first.
-            boolean sourceFirst = source.getId().compareTo(destination.getId()) < 0;
-            Inventory firstLock  = sourceFirst ? source : destination;
-            Inventory secondLock = sourceFirst ? destination : source;
-
-            // These replace the earlier-loaded instances with locked versions
-            Inventory lockedFirst  = inventoryRepository.findByIdWithLock(firstLock.getId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Inventory", firstLock.getId()));
-            Inventory lockedSecond = inventoryRepository.findByIdWithLock(secondLock.getId())
-                    .orElseThrow(() -> new ResourceNotFoundException("Inventory", secondLock.getId()));
-
-            // Re-assign to semantic variables after locking
-            Inventory lockedSource = sourceFirst ? lockedFirst : lockedSecond;
-            Inventory lockedDest   = sourceFirst ? lockedSecond : lockedFirst;
 
             // Snapshot pre-transfer state for journal
             int sourceQtyBefore   = lockedSource.getQuantity();
@@ -131,9 +128,4 @@ public class InventoryTransferService {
         }
     }
 
-    private Inventory findInventoryOrThrow(UUID id) {
-        return inventoryRepository.findById(id)
-                .filter(i -> i.getDeletedAt() == null)
-                .orElseThrow(() -> new ResourceNotFoundException("Inventory", id));
-    }
 }
