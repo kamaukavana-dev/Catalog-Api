@@ -15,12 +15,17 @@ import static org.mockito.Mockito.when;
 
 class RateLimitingFilterTest {
 
+    private static ObjectMapper jsonMapper() {
+        return new ObjectMapper()
+                .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+    }
+
     @Test
     void shouldReturn429WhenRedisDeniesRequest() throws Exception {
         RedisTokenBucketRateLimiter limiter = mock(RedisTokenBucketRateLimiter.class);
         when(limiter.tryConsume(any(), anyInt(), any())).thenReturn(false);
 
-        RateLimitingFilter filter = new RateLimitingFilter(limiter, new ObjectMapper());
+        RateLimitingFilter filter = new RateLimitingFilter(limiter, jsonMapper());
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/products");
         MockHttpServletResponse response = new MockHttpServletResponse();
         MockFilterChain chain = new MockFilterChain();
@@ -37,7 +42,7 @@ class RateLimitingFilterTest {
         doThrow(new RuntimeException("redis-down"))
                 .when(limiter).tryConsume(any(), anyInt(), any());
 
-        RateLimitingFilter filter = new RateLimitingFilter(limiter, new ObjectMapper());
+        RateLimitingFilter filter = new RateLimitingFilter(limiter, jsonMapper());
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/products");
         MockHttpServletResponse response = new MockHttpServletResponse();
         MockFilterChain chain = new MockFilterChain();
@@ -52,7 +57,7 @@ class RateLimitingFilterTest {
         RedisTokenBucketRateLimiter limiter = mock(RedisTokenBucketRateLimiter.class);
         when(limiter.tryConsume(any(), anyInt(), any())).thenReturn(false);
 
-        RateLimitingFilter filter = new RateLimitingFilter(limiter, new ObjectMapper());
+        RateLimitingFilter filter = new RateLimitingFilter(limiter, jsonMapper());
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/actuator/health");
         MockHttpServletResponse response = new MockHttpServletResponse();
         MockFilterChain chain = new MockFilterChain();
