@@ -33,7 +33,10 @@ public interface CategoryRepository extends JpaRepository<Category, UUID> {
     @Query("SELECT c FROM Category c LEFT JOIN FETCH c.parent WHERE c.deletedAt IS NULL ORDER BY c.depth ASC, c.displayOrder ASC")
     List<Category> findAllActive();
 
-    @Query("SELECT c FROM Category c LEFT JOIN FETCH c.parent WHERE c.path LIKE :pathPrefix AND c.deletedAt IS NULL ORDER BY c.depth ASC")
+    // pathPrefix is the ancestor path terminated by '/', e.g. "/<rootId>/"; the
+    // wildcard is appended here so callers pass a clean prefix and every descendant
+    // (child, grandchild, ...) whose materialized path starts with it is returned.
+    @Query("SELECT c FROM Category c LEFT JOIN FETCH c.parent WHERE c.path LIKE CONCAT(:pathPrefix, '%') AND c.deletedAt IS NULL ORDER BY c.depth ASC")
     List<Category> findActiveSubtree(@Param("pathPrefix") String pathPrefix);
 
     @Query("SELECT c FROM Category c WHERE c.id IN :ids AND c.deletedAt IS NULL ORDER BY c.depth ASC")
