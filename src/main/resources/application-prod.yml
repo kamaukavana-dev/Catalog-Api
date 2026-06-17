@@ -1,4 +1,7 @@
 spring:
+  threads:
+    virtual:
+      enabled: true
   jpa:
     show-sql: false
 
@@ -24,5 +27,6 @@ server:
 
 catalog:
   security:
+    enable-hsts: true
     require-api-key: ${CATALOG_REQUIRE_API_KEY:true}
     api-keys: ${CATALOG_API_KEYS:}
