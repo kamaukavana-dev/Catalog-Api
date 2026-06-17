@@ -26,6 +26,7 @@ class IdempotencyFilterTest {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
 
         ObjectMapper mapper = new ObjectMapper();
+        mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
         Map<String, Object> cached = new HashMap<>();
         cached.put("status", 201);
         cached.put("contentType", "application/json");

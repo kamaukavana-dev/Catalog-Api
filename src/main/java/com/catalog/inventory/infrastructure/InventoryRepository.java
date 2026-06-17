@@ -45,9 +45,15 @@ public interface InventoryRepository extends JpaRepository<Inventory, UUID> {
      * Transfers are low-throughput, high-consistency operations: pessimistic is correct here.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.QueryHints({
+        @jakarta.persistence.QueryHint(name = "javax.persistence.lock.timeout", value = "5000")
+    })
     @Query("SELECT i FROM Inventory i WHERE i.id = :id AND i.deletedAt IS NULL")
     Optional<Inventory> findByIdWithLock(@Param("id") UUID id);
 
     @Query("SELECT COUNT(i) FROM Inventory i WHERE i.reservedQuantity > i.quantity")
     long countViolatingReservedConstraint();
+
+    @Query("SELECT COUNT(i) > 0 FROM Inventory i WHERE i.warehouse.id = :warehouseId AND i.deletedAt IS NULL")
+    boolean existsActiveByWarehouseId(@Param("warehouseId") UUID warehouseId);
 }

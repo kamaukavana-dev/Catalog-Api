@@ -27,26 +27,6 @@ public class S3StorageService implements StorageService {
     private final S3Presigner s3Presigner;
 
     @Override
-    public PresignedUploadDetails generatePresignedPut(String storageKey, String contentType) {
-        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
-                .bucket(config.getBucket())
-                .key(storageKey)
-                .contentType(contentType)
-                .build();
-
-        PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
-                .signatureDuration(Duration.ofMinutes(config.getPresignedUrlExpiryMinutes()))
-                .putObjectRequest(putObjectRequest)
-                .build();
-
-        var presigned = s3Presigner.presignPutObject(presignRequest);
-        Instant expiresAt = presigned.expiration();
-
-        log.debug("Generated presigned PUT for key={} expires={}", storageKey, expiresAt);
-        return new PresignedUploadDetails(presigned.url().toString(), expiresAt);
-    }
-
-    @Override
     @CircuitBreaker(name = "object-storage", fallbackMethod = "verifyFallback")
     @Retry(name = "object-storage")
     public StorageObjectMetadata verifyAndGetMetadata(String storageKey) {
@@ -71,11 +51,16 @@ public class S3StorageService implements StorageService {
 
     // Fallback: if storage circuit is OPEN, fail fast with clear error
     private StorageObjectMetadata verifyFallback(String storageKey, Exception ex) {
+        if (ex instanceof com.catalog.common.exception.StorageObjectNotFoundException) {
+            throw (com.catalog.common.exception.StorageObjectNotFoundException) ex;
+        }
         throw new StorageUnavailableException(
             "Object storage is temporarily unavailable. Please retry in 60 seconds.", ex);
     }
 
     @Override
+    @CircuitBreaker(name = "object-storage")
+    @Retry(name = "object-storage")
     public InputStream openStream(String storageKey) {
         return s3Client.getObject(
                 GetObjectRequest.builder()
@@ -86,6 +71,7 @@ public class S3StorageService implements StorageService {
 
     @Override
     @CircuitBreaker(name = "object-storage")
+    @Retry(name = "object-storage")
     public void delete(String storageKey) {
         try {
             s3Client.deleteObject(
@@ -97,5 +83,27 @@ public class S3StorageService implements StorageService {
         } catch (Exception e) {
             log.warn("Failed to delete storage object key={}: {}", storageKey, e.getMessage());
         }
+    }
+    
+    @Override
+    @CircuitBreaker(name = "object-storage")
+    @Retry(name = "object-storage")
+    public PresignedUploadDetails generatePresignedPut(String storageKey, String contentType) {
+        PutObjectRequest putObjectRequest = PutObjectRequest.builder()
+                .bucket(config.getBucket())
+                .key(storageKey)
+                .contentType(contentType)
+                .build();
+
+        PutObjectPresignRequest presignRequest = PutObjectPresignRequest.builder()
+                .signatureDuration(Duration.ofMinutes(config.getPresignedUrlExpiryMinutes()))
+                .putObjectRequest(putObjectRequest)
+                .build();
+
+        var presigned = s3Presigner.presignPutObject(presignRequest);
+        Instant expiresAt = presigned.expiration();
+
+        log.debug("Generated presigned PUT for key={} expires={}", storageKey, expiresAt);
+        return new PresignedUploadDetails(presigned.url().toString(), expiresAt);
     }
 }

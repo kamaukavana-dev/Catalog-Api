@@ -3,6 +3,7 @@ package com.catalog.product.application.search;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.util.Set;
 import java.util.UUID;
 
@@ -55,16 +56,26 @@ public class ProductSearchQueryBuilder {
     // -------------------------------------------------------------------------
     public ProductSearchQueryBuilder textSearch(String search) {
         if (search == null || search.isBlank()) return this;
-        // Use plainto_tsquery: handles multi-word queries without special chars
-        // Fallback to trigram similarity for partial/prefix matches
+        String trimmed = search.trim();
+
+        // Short queries (<=3 chars) are not reliably handled by FTS stemming and can produce
+        // inconsistent trigram similarity results. Use a deterministic prefix match instead.
+        if (trimmed.length() <= 3) {
+            conditions.append("AND psp.name ILIKE :searchPrefix\n");
+            params.addValue("searchPrefix", trimmed + "%");
+            return this;
+        }
+
+        // Use plainto_tsquery: handles multi-word queries without special chars.
+        // Fallback to pg_trgm similarity for partial/fuzzy matches.
         conditions.append("""
             AND (
                 psp.searchable_text @@ plainto_tsquery('english', :searchQuery)
-                OR psp.name %>> :searchFuzzy
+                OR psp.name % :searchFuzzy
             )
             """);
-        params.addValue("searchQuery", search.trim());
-        params.addValue("searchFuzzy", search.trim());
+        params.addValue("searchQuery", trimmed);
+        params.addValue("searchFuzzy", trimmed);
         return this;
     }
 
@@ -140,19 +151,21 @@ public class ProductSearchQueryBuilder {
         if (cursor == null) return this;
         switch (sort) {
             case NEWEST -> {
+                if (cursor.createdAt() == null) return this;
                 conditions.append("""
                     AND (psp.created_at < :cursorTs
                          OR (psp.created_at = :cursorTs AND psp.product_id < :cursorId::uuid))
                     """);
-                params.addValue("cursorTs", cursor.createdAt());
+                params.addValue("cursorTs", Timestamp.from(cursor.createdAt()));
                 params.addValue("cursorId", cursor.id().toString());
             }
             case OLDEST -> {
+                if (cursor.createdAt() == null) return this;
                 conditions.append("""
                     AND (psp.created_at > :cursorTs
                          OR (psp.created_at = :cursorTs AND psp.product_id > :cursorId::uuid))
                     """);
-                params.addValue("cursorTs", cursor.createdAt());
+                params.addValue("cursorTs", Timestamp.from(cursor.createdAt()));
                 params.addValue("cursorId", cursor.id().toString());
             }
             case NAME_ASC -> {

@@ -1,6 +1,8 @@
 package com.catalog.warehouse.infrastructure;
 
 import com.catalog.warehouse.domain.Warehouse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -22,5 +24,10 @@ public interface WarehouseRepository extends JpaRepository<Warehouse, UUID> {
 
     @Query("SELECT w FROM Warehouse w WHERE w.deletedAt IS NULL ORDER BY w.code ASC")
     List<Warehouse> findAllActive();
-}
 
+    @Query(
+            value = "SELECT w FROM Warehouse w WHERE w.deletedAt IS NULL",
+            countQuery = "SELECT COUNT(w) FROM Warehouse w WHERE w.deletedAt IS NULL"
+    )
+    Page<Warehouse> findPageActive(Pageable pageable);
+}

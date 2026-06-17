@@ -6,6 +6,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
@@ -27,6 +28,7 @@ import java.util.stream.Collectors;
  *
  * Enforced only when catalog.security.require-api-key is true.
  */
+@Slf4j
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 2)
 public class ApiKeyAuthFilter extends OncePerRequestFilter {
@@ -58,6 +60,16 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             return;
         }
 
+        if (allowedKeys.isEmpty()) {
+            log.error("API KEY AUTHENTICATION FAILED: catalog.security.require-api-key=true but no keys provided in CATALOG_API_KEYS.");
+            response.setStatus(HttpStatus.INTERNAL_SERVER_ERROR.value());
+            writeErrorResponse(request, response,
+                    HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                    "Internal Server Error",
+                    "Security configuration error. Please contact administrator.");
+            return;
+        }
+
         String apiKey = request.getHeader(API_KEY_HEADER);
         boolean isValid = false;
 
@@ -67,6 +79,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
                 byte[] allowedKeyBytes = allowedKey.getBytes(StandardCharsets.UTF_8);
                 if (MessageDigest.isEqual(apiKeyBytes, allowedKeyBytes)) {
                     isValid = true;
+                    break;
                 }
             }
         }

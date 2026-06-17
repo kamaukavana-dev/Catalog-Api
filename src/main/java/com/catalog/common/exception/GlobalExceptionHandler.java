@@ -124,14 +124,15 @@ public class GlobalExceptionHandler {
             MethodArgumentNotValidException ex,
             HttpServletRequest request) {
 
-        Map<String, List<String>> errors = new HashMap<>();
-
+        List<ErrorResponse.ValidationError> errors = new ArrayList<>();
         for (FieldError fieldError : ex.getBindingResult().getFieldErrors()) {
-            errors.computeIfAbsent(fieldError.getField(), k -> new ArrayList<>())
-                    .add(fieldError.getDefaultMessage());
+            errors.add(new ErrorResponse.ValidationError(
+                    fieldError.getField(),
+                    fieldError.getDefaultMessage()
+            ));
         }
 
-        log.warn("Validation failed for request to {}: {}", request.getRequestURI(), errors);
+        log.warn("Validation failed for request to {}: {} field errors", request.getRequestURI(), errors.size());
 
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(ErrorResponse.builder()
@@ -149,13 +150,12 @@ public class GlobalExceptionHandler {
             ConstraintViolationException ex,
             HttpServletRequest request) {
 
-        Map<String, List<String>> errors = new HashMap<>();
+        List<ErrorResponse.ValidationError> errors = new ArrayList<>();
         ex.getConstraintViolations().forEach(v -> {
             String field = v.getPropertyPath() == null
                     ? "request"
                     : v.getPropertyPath().toString();
-            errors.computeIfAbsent(field, k -> new ArrayList<>())
-                    .add(v.getMessage());
+            errors.add(new ErrorResponse.ValidationError(field, v.getMessage()));
         });
 
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
@@ -287,10 +287,7 @@ public class GlobalExceptionHandler {
         // NEVER expose internal exception details in production.
         // Stack traces, class names, and SQL errors reveal attack surface.
         // The correlationId lets ops engineers correlate the incident to logs.
-        boolean isProd = activeProfile.contains("prod");
-        String message = isProd
-            ? "An unexpected error occurred. Reference ID: " + correlationId
-            : ex.getMessage();
+        String message = "An unexpected error occurred. Reference ID: " + correlationId;
 
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ErrorResponse.builder()

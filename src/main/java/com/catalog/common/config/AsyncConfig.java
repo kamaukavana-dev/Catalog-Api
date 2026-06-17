@@ -21,16 +21,10 @@ public class AsyncConfig implements AsyncConfigurer {
     @Override
     public Executor getAsyncExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(4);
-        executor.setMaxPoolSize(8);
-        executor.setQueueCapacity(100);
-        executor.setThreadNamePrefix("async-event-");
-        executor.setWaitForTasksToCompleteOnShutdown(true);
-        executor.setAwaitTerminationSeconds(30);
-
-        // CRITICAL: Copy MDC context to async threads.
-        // Without this, every @Async method loses traceId, requestId, spanId.
-        // Log correlation across async boundaries requires this.
+        // Since virtual threads are enabled, we can use a simple task executor
+        // that delegates to a virtual thread per task executor.
+        executor.setCorePoolSize(0); // Not relevant for virtual threads but required by some implementations
+        executor.setThreadNamePrefix("async-vthread-");
         executor.setTaskDecorator(runnable -> {
             Map<String, String> mdcContext = org.slf4j.MDC.getCopyOfContextMap();
             return () -> {
@@ -45,6 +39,8 @@ public class AsyncConfig implements AsyncConfigurer {
             };
         });
 
+        // Use Java 21 Virtual Thread Executor
+        executor.setVirtualThreads(true);
         executor.initialize();
         return executor;
     }

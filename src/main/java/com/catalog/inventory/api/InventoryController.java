@@ -78,10 +78,10 @@ public class InventoryController {
         return ResponseEntity.ok(ApiResponse.success("Reservation cancelled", inventoryService.cancelReservation(id)));
     }
 
-    @PostMapping("/api/v1/inventory/transfers")
+    @PostMapping({"/api/v1/inventory/transfers", "/api/v1/transfers"})
     public ResponseEntity<ApiResponse<TransferResponse>> transfer(
             @Valid @RequestBody TransferStockRequest request) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(ApiResponse.success("Transfer accepted",
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success("Transfer completed",
                 transferService.transfer(request)));
     }
 

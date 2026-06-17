@@ -6,7 +6,6 @@ import lombok.Getter;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 
 @Getter
 @Builder
@@ -19,6 +18,8 @@ public class ErrorResponse {
     private final String path;
     private final Instant timestamp;
 
-    // Field-level validation errors: {"fieldName": "error message"}
-    private final Map<String, List<String>> validationErrors;
+    // Field-level validation errors: [{"field": "...", "message": "..."}]
+    private final List<ValidationError> validationErrors;
+
+    public record ValidationError(String field, String message) {}
 }
