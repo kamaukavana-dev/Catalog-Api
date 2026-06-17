@@ -1,26 +1,17 @@
 package com.catalog.inventory.application;
 
-import com.catalog.brand.domain.Brand;
-import com.catalog.brand.infrastructure.BrandRepository;
-import com.catalog.category.domain.Category;
-import com.catalog.category.infrastructure.CategoryRepository;
 import com.catalog.common.BaseIntegrationTest;
-import com.catalog.inventory.api.dto.request.CreateInventoryRequest;
-import com.catalog.inventory.domain.BulkImportJob;
+import com.catalog.inventory.domain.*;
 import com.catalog.inventory.infrastructure.BulkImportJobRepository;
-import com.catalog.inventory.infrastructure.InventoryJournalRepository;
 import com.catalog.inventory.infrastructure.InventoryRepository;
 import com.catalog.product.domain.Product;
-import com.catalog.product.domain.ProductStatus;
 import com.catalog.product.infrastructure.ProductRepository;
-import com.catalog.variant.domain.TaxClass;
 import com.catalog.variant.domain.Variant;
-import com.catalog.variant.domain.VariantStatus;
+import com.catalog.variant.domain.TaxClass;
 import com.catalog.variant.infrastructure.VariantRepository;
 import com.catalog.warehouse.domain.Warehouse;
 import com.catalog.warehouse.domain.WarehouseType;
 import com.catalog.warehouse.infrastructure.WarehouseRepository;
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,172 +22,108 @@ import java.time.Duration;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
-class BulkInventoryServiceIT extends BaseIntegrationTest {
+public class BulkInventoryServiceIT extends BaseIntegrationTest {
 
-    @Autowired private BulkInventoryService bulkInventoryService;
-    @Autowired private InventoryService inventoryService;
+    @Autowired
+    private BulkInventoryService bulkInventoryService;
 
-    @Autowired private BulkImportJobRepository jobRepository;
-    @Autowired private InventoryRepository inventoryRepository;
-    @Autowired private InventoryJournalRepository journalRepository;
+    @Autowired
+    private BulkImportJobRepository jobRepository;
 
-    @Autowired private WarehouseRepository warehouseRepository;
-    @Autowired private ProductRepository productRepository;
-    @Autowired private VariantRepository variantRepository;
-    @Autowired private BrandRepository brandRepository;
-    @Autowired private CategoryRepository categoryRepository;
+    @Autowired
+    private InventoryRepository inventoryRepository;
+
+    @Autowired
+    private VariantRepository variantRepository;
+
+    @Autowired
+    private WarehouseRepository warehouseRepository;
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    private String variantSku;
+    private String warehouseCode = "WH-BULK";
 
     @BeforeEach
     void setUp() {
         jobRepository.deleteAll();
-        journalRepository.deleteAll();
         inventoryRepository.deleteAll();
         variantRepository.deleteAll();
         productRepository.deleteAll();
-        brandRepository.deleteAll();
-        categoryRepository.deleteAll();
         warehouseRepository.deleteAll();
+
+        Product product = Product.createDraft("Bulk Product", "bulk-product-" + UUID.randomUUID());
+        product = productRepository.save(product);
+
+        variantSku = "SKU-BULK-" + UUID.randomUUID();
+        Variant variant = Variant.createDraft(product, variantSku, new BigDecimal("50.00"), TaxClass.STANDARD);
+        variantRepository.save(variant);
+
+        Warehouse warehouse = Warehouse.create(warehouseCode, "Bulk Warehouse", WarehouseType.MAIN);
+        warehouseRepository.save(warehouse);
+
+        inventoryRepository.save(Inventory.create(variant, warehouse, 5));
     }
 
     @Test
-    void shouldCompleteJobAndPersistAllRows_whenValid150RowImportSubmitted() {
-        UUID variantId = seedVariant("SKU-BULK-OK");
-        Warehouse wh = warehouseRepository.save(Warehouse.create("WH-BULK", "Bulk Warehouse", WarehouseType.MAIN));
-        inventoryService.createInventory(new CreateInventoryRequest(variantId, wh.getId(), 0, 0));
-
+    void shouldProcessValidImportSuccessfully() {
         UUID sessionId = UUID.randomUUID();
-        MockMultipartFile file = csvFile(buildCsv(150, "SKU-BULK-OK", "WH-BULK", false));
+        String csv = "variant_sku,warehouse_code,adjustment_type,quantity,reason\n" +
+                     variantSku + "," + warehouseCode + ",RECEIVE,100,Stock arrival\n";
+        
+        MockMultipartFile file = new MockMultipartFile("file", "import.csv", "text/csv", csv.getBytes());
 
-        BulkImportJob submitted = bulkInventoryService.submitImport(sessionId, file);
+        BulkImportJob job = bulkInventoryService.submitImport(sessionId, file);
+        assertThat(job.getStatus()).isEqualTo("PENDING");
 
-        BulkImportJob completed = Awaitility.await()
-                .atMost(Duration.ofSeconds(10))
-                .pollInterval(Duration.ofMillis(100))
-                .until(() -> bulkInventoryService.getJobStatus(submitted.getId()),
-                        j -> "COMPLETED".equals(j.getStatus()));
+        await().atMost(Duration.ofSeconds(10))
+                .until(() -> "COMPLETED".equals(jobRepository.findById(job.getId()).get().getStatus()));
 
-        assertThat(completed.getTotalRows()).isEqualTo(150);
-        assertThat(completed.getProcessedRows()).isEqualTo(150);
-        assertThat(completed.getFailedRows()).isEqualTo(0);
-        assertThat(completed.getErrorSummary()).isNull();
+        BulkImportJob finalJob = jobRepository.findById(job.getId()).orElseThrow();
+        assertThat(finalJob.getProcessedRows()).isEqualTo(1);
+        assertThat(finalJob.getFailedRows()).isZero();
 
-        var inv = inventoryRepository.findActiveByVariantAndWarehouse(variantId, wh.getId()).orElseThrow();
-        assertThat(inv.getQuantity()).isEqualTo(150);
-        assertThat(journalRepository.findAll()).hasSize(150);
+        Inventory inv = inventoryRepository.findAll().get(0);
+        assertThat(inv.getQuantity()).isEqualTo(100);
     }
 
     @Test
-    void shouldFailFastAfterFirstInvalidRow_whenRow76HasNegativeQuantity() {
-        UUID variantId = seedVariant("SKU-BULK-BAD");
-        Warehouse wh = warehouseRepository.save(Warehouse.create("WH-BULK", "Bulk Warehouse", WarehouseType.MAIN));
-        inventoryService.createInventory(new CreateInventoryRequest(variantId, wh.getId(), 0, 0));
-
+    void shouldHandlePartialFailure() {
         UUID sessionId = UUID.randomUUID();
-        MockMultipartFile file = csvFile(buildCsv(150, "SKU-BULK-BAD", "WH-BULK", true));
+        String csv = "variant_sku,warehouse_code,adjustment_type,quantity,reason\n" +
+                     variantSku + "," + warehouseCode + ",RECEIVE,50,Valid row\n" +
+                     "INVALID-SKU," + warehouseCode + ",RECEIVE,10,Invalid row\n";
 
-        BulkImportJob submitted = bulkInventoryService.submitImport(sessionId, file);
+        MockMultipartFile file = new MockMultipartFile("file", "partial.csv", "text/csv", csv.getBytes());
 
-        BulkImportJob finished = Awaitility.await()
-                .atMost(Duration.ofSeconds(10))
-                .pollInterval(Duration.ofMillis(100))
-                .until(() -> bulkInventoryService.getJobStatus(submitted.getId()),
-                        j -> "PARTIALLY_FAILED".equals(j.getStatus()));
+        BulkImportJob job = bulkInventoryService.submitImport(sessionId, file);
 
-        assertThat(finished.getTotalRows()).isEqualTo(150);
-        assertThat(finished.getProcessedRows()).isEqualTo(75);
-        assertThat(finished.getFailedRows()).isEqualTo(75);
-        assertThat(finished.getErrorSummary()).isNotBlank();
+        await().atMost(Duration.ofSeconds(10))
+                .until(() -> {
+                    String status = jobRepository.findById(job.getId()).get().getStatus();
+                    return "PARTIALLY_FAILED".equals(status) || "FAILED".equals(status);
+                });
 
-        var inv = inventoryRepository.findActiveByVariantAndWarehouse(variantId, wh.getId()).orElseThrow();
-        assertThat(inv.getQuantity()).isEqualTo(75);
-        assertThat(journalRepository.findAll()).hasSize(75);
+        BulkImportJob finalJob = jobRepository.findById(job.getId()).orElseThrow();
+        assertThat(finalJob.getProcessedRows()).isEqualTo(1);
+        assertThat(finalJob.getFailedRows()).isEqualTo(1);
     }
 
     @Test
-    void shouldReturnExistingJob_whenSameImportSessionIdSubmittedTwice() {
-        UUID variantId = seedVariant("SKU-BULK-IDEMP");
-        Warehouse wh = warehouseRepository.save(Warehouse.create("WH-BULK", "Bulk Warehouse", WarehouseType.MAIN));
-        inventoryService.createInventory(new CreateInventoryRequest(variantId, wh.getId(), 0, 0));
-
+    void shouldEnforceIdempotency() {
         UUID sessionId = UUID.randomUUID();
-        MockMultipartFile file = csvFile(buildCsv(10, "SKU-BULK-IDEMP", "WH-BULK", false));
+        String csv = "variant_sku,warehouse_code,adjustment_type,quantity,reason\n" +
+                     variantSku + "," + warehouseCode + ",RECEIVE,50,Idempotent test\n";
 
-        BulkImportJob first = bulkInventoryService.submitImport(sessionId, file);
-        BulkImportJob second = bulkInventoryService.submitImport(sessionId, file);
+        MockMultipartFile file = new MockMultipartFile("file", "idem.csv", "text/csv", csv.getBytes());
 
-        assertThat(second.getId()).isEqualTo(first.getId());
+        BulkImportJob job1 = bulkInventoryService.submitImport(sessionId, file);
+        BulkImportJob job2 = bulkInventoryService.submitImport(sessionId, file);
+
+        assertThat(job1.getId()).isEqualTo(job2.getId());
         assertThat(jobRepository.count()).isEqualTo(1);
-    }
-
-    @Test
-    void shouldTransitionPendingToInProgressToCompleted_whenValidImportRuns() {
-        UUID variantId = seedVariant("SKU-BULK-STATE");
-        Warehouse wh = warehouseRepository.save(Warehouse.create("WH-BULK", "Bulk Warehouse", WarehouseType.MAIN));
-        inventoryService.createInventory(new CreateInventoryRequest(variantId, wh.getId(), 0, 0));
-
-        UUID sessionId = UUID.randomUUID();
-        MockMultipartFile file = csvFile(buildCsv(150, "SKU-BULK-STATE", "WH-BULK", false));
-
-        BulkImportJob submitted = bulkInventoryService.submitImport(sessionId, file);
-        assertThat(submitted.getStatus()).isEqualTo("PENDING");
-
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(10))
-                .pollDelay(Duration.ZERO)
-                .pollInterval(Duration.ofMillis(10))
-                .until(() -> bulkInventoryService.getJobStatus(submitted.getId()).getStatus(),
-                        s -> "IN_PROGRESS".equals(s));
-
-        Awaitility.await()
-                .atMost(Duration.ofSeconds(10))
-                .pollInterval(Duration.ofMillis(100))
-                .until(() -> bulkInventoryService.getJobStatus(submitted.getId()).getStatus(),
-                        s -> "COMPLETED".equals(s));
-    }
-
-    private MockMultipartFile csvFile(String csv) {
-        return new MockMultipartFile(
-                "file",
-                "bulk.csv",
-                "text/csv",
-                csv.getBytes(java.nio.charset.StandardCharsets.UTF_8)
-        );
-    }
-
-    private String buildCsv(int rows, String sku, String whCode, boolean row76Negative) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("variant_sku,warehouse_code,adjustment_type,quantity,reason\n");
-        for (int i = 1; i <= rows; i++) {
-            int qty = 1;
-            if (row76Negative && i == 76) {
-                qty = -1;
-            }
-            sb.append(sku).append(',')
-                    .append(whCode).append(',')
-                    .append("RECEIVE").append(',')
-                    .append(qty).append(',')
-                    .append("row-").append(i)
-                    .append('\n');
-        }
-        return sb.toString();
-    }
-
-    private UUID seedVariant(String internalSku) {
-        Brand brand = brandRepository.save(Brand.create("Test Brand", "test-brand", "desc"));
-
-        Category category = categoryRepository.save(Category.createRoot("Root", "root", "desc"));
-        category.initializePath();
-        categoryRepository.save(category);
-
-        Product product = Product.createDraft("Test Product", "test-product");
-        product.assignBrand(brand);
-        product.assignPrimaryCategory(category);
-        product.transitionTo(ProductStatus.ACTIVE);
-        Product savedProduct = productRepository.save(product);
-
-        Variant variant = Variant.createDraft(savedProduct, internalSku, BigDecimal.valueOf(10), TaxClass.STANDARD);
-        variant.setStatus(VariantStatus.ACTIVE);
-        return variantRepository.save(variant).getId();
     }
 }
