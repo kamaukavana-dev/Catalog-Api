@@ -1,68 +1,37 @@
 # API Documentation
 
-This document provides details on the available API endpoints.
+## Authentication
+Mutation endpoints (POST, PUT, PATCH, DELETE) require an API key in the `X-Api-Key` header if configured.
 
-## Conventions
-
-- **Base URL**: All API endpoints are prefixed with `/api/v1`.
-- **Authentication**: Optional API key guard for mutation endpoints. When enabled, send `X-Api-Key`.
-- **Error Responses**: Errors are returned in a standardized JSON format:
-  ```json
-  {
-    "timestamp": "2023-10-27T10:00:00.000+00:00",
-    "status": 400,
-    "error": "Bad Request",
-    "message": "Validation error message",
-    "path": "/api/v1/products"
-  }
-  ```
+## Common Headers
+- `X-Idempotency-Key`: Required for all mutation endpoints to prevent duplicate processing.
 
 ## Endpoints
 
-### Products
-
-#### `POST /api/v1/products/bulk-update`
-
-Asynchronously updates products in bulk from a CSV file.
-
-- **Request**:
-  - `Content-Type`: `multipart/form-data`
-  - `file`: The CSV file to upload.
-  - `importSessionId`: UUID used for idempotent job submission.
-- **CSV Format**:
-  - The CSV file must have a header row.
-  - Required columns: `product_id`, `name`.
-- **Responses**:
-  - `202 Accepted`: On successful submission of the file. The processing is done asynchronously.
-  - `400 Bad Request`: If the file is empty, not a CSV, or malformed.
-
-**Evidence**:
-- `com.catalog.product.api.ProductController#bulkUpdateProducts`
-- `com.catalog.product.application.ProductBulkUpdateService#parseCSV`
-
----
-
 ### Inventory
+#### POST /api/v1/inventory
+**Description**: Create a new inventory record for a variant at a warehouse.
+**Status**: 201 Created
 
-#### `POST /api/v1/inventory/bulk-imports`
+#### POST /api/v1/inventory/transfers
+**Description**: Move stock between warehouses.
+**Status**: 201 Created
 
-Asynchronously imports inventory adjustments from a CSV file.
+#### POST /api/v1/inventory/adjust
+**Description**: Manually adjust stock levels (RECEIVE, RECONCILE).
+**Status**: 200 OK
 
-- **Request**:
-  - `Content-Type`: `multipart/form-data`
-  - `file`: The CSV file to upload.
-  - `importSessionId`: UUID used for idempotent job submission.
-- **CSV Format**:
-  - The CSV file must have a header row.
-  - Required columns: `variant_sku`, `warehouse_code`, `adjustment_type`, `quantity`, `reason`.
-- **Responses**:
-  - `202 Accepted`: On successful submission of the file. The processing is done asynchronously.
-  - `400 Bad Request`: If the file is empty, not a CSV, or malformed.
+### Products
+#### GET /api/v1/products/search
+**Description**: High-performance search and filtering.
+**Parameters**: `search`, `brandId`, `categoryId`, `minPrice`, `maxPrice`, `inStock`, `sort`, `cursor`, `pageSize`.
+**Status**: 200 OK
 
-**Evidence**:
-- `com.catalog.inventory.api.BulkImportController#submitImport`
-- `com.catalog.inventory.application.BulkInventoryService#parseCSV`
+#### POST /api/v1/products
+**Description**: Create a new product.
+**Status**: 201 Created
 
----
-
-*Note: This document is based on the current state of the codebase. Other standard CRUD endpoints for Products, Categories, and Brands are implied by the service and repository layers but are not explicitly exposed in the controllers at this time. Their implementation is NOT VERIFIED FROM CODEBASE.*
+### Categories
+#### GET /api/v1/categories/tree
+**Description**: Fetch the full hierarchical category tree.
+**Status**: 200 OK
