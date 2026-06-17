@@ -1,26 +1,37 @@
 package com.catalog.brand.infrastructure;
 
 import com.catalog.brand.domain.Brand;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.test.context.ActiveProfiles;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for BrandRepository.
- * Requires a running database (PostgreSQL via Testcontainers).
- * Enable with @Disabled removed and proper database setup.
+ * Integration tests for BrandRepository against real PostgreSQL via Testcontainers.
+ * Flyway migrations run against the container; the embedded-DB replacement is disabled.
  */
-@Disabled("Requires database setup via Testcontainers")
+@Testcontainers
 @DataJpaTest
+@ActiveProfiles("test")
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class BrandRepositoryTest {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
 
     @Autowired
     private TestEntityManager entityManager;

@@ -1,11 +1,16 @@
 package com.catalog.category.infrastructure;
 
 import com.catalog.category.domain.Category;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.test.autoconfigure.orm.jpa.TestEntityManager;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.ActiveProfiles;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 import java.util.Optional;
@@ -13,13 +18,19 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for CategoryRepository.
- * Requires a running database (PostgreSQL via Testcontainers).
- * Enable with @Disabled removed and proper database setup.
+ * Integration tests for CategoryRepository against real PostgreSQL via Testcontainers.
+ * Exercises materialized-path subtree queries that depend on Postgres semantics.
  */
-@Disabled("Requires database setup via Testcontainers")
+@Testcontainers
 @DataJpaTest
+@ActiveProfiles("test")
+@AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 class CategoryRepositoryTest {
+
+    @Container
+    @ServiceConnection
+    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
+
 
     @Autowired
     private TestEntityManager entityManager;
