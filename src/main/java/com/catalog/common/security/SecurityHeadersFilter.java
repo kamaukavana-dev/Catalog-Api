@@ -29,6 +29,12 @@ import java.io.IOException;
 @Order(Ordered.HIGHEST_PRECEDENCE + 1)
 public class SecurityHeadersFilter extends OncePerRequestFilter {
 
+    private final boolean enableHsts;
+
+    public SecurityHeadersFilter(@org.springframework.beans.factory.annotation.Value("${catalog.security.enable-hsts:false}") boolean enableHsts) {
+        this.enableHsts = enableHsts;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                      HttpServletResponse response,
@@ -46,8 +52,7 @@ public class SecurityHeadersFilter extends OncePerRequestFilter {
 
         // HSTS: enforce HTTPS. Only set in production (HTTPS must be enabled).
         // In local dev: removed to allow HTTP. Configure via environment.
-        String hsts = System.getenv("ENABLE_HSTS");
-        if ("true".equalsIgnoreCase(hsts)) {
+        if (enableHsts) {
             response.setHeader("Strict-Transport-Security",
                 "max-age=31536000; includeSubDomains; preload");
         }

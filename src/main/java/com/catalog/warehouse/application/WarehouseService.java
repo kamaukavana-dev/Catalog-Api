@@ -1,13 +1,17 @@
 package com.catalog.warehouse.application;
 
+import com.catalog.common.exception.BusinessRuleViolationException;
 import com.catalog.common.exception.DuplicateResourceException;
 import com.catalog.common.exception.ResourceNotFoundException;
+import com.catalog.inventory.infrastructure.InventoryRepository;
 import com.catalog.warehouse.api.dto.request.CreateWarehouseRequest;
 import com.catalog.warehouse.api.dto.request.UpdateWarehouseRequest;
 import com.catalog.warehouse.api.dto.response.WarehouseResponse;
 import com.catalog.warehouse.domain.Warehouse;
 import com.catalog.warehouse.infrastructure.WarehouseRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +24,7 @@ import java.util.stream.Collectors;
 public class WarehouseService {
 
     private final WarehouseRepository warehouseRepository;
+    private final InventoryRepository inventoryRepository;
 
     @Transactional
     public WarehouseResponse createWarehouse(CreateWarehouseRequest request) {
@@ -46,6 +51,11 @@ public class WarehouseService {
         return warehouseRepository.findAllActive().stream().map(this::toResponse).collect(Collectors.toList());
     }
 
+    @Transactional(readOnly = true)
+    public Page<WarehouseResponse> listWarehouses(Pageable pageable) {
+        return warehouseRepository.findPageActive(pageable).map(this::toResponse);
+    }
+
     @Transactional
     public WarehouseResponse updateWarehouse(UUID id, UpdateWarehouseRequest request) {
         Warehouse warehouse = findActiveOrThrow(id);
@@ -66,6 +76,14 @@ public class WarehouseService {
             warehouse.setCountryCode(request.countryCode().trim().toUpperCase());
         }
         if (request.active() != null) {
+            if (!request.active() && warehouse.isActive()) {
+                boolean hasActiveInventory = inventoryRepository.existsActiveByWarehouseId(warehouse.getId());
+                if (hasActiveInventory) {
+                    throw new BusinessRuleViolationException(
+                            "Cannot deactivate warehouse '" + warehouse.getCode() + "': inventory still exists for this warehouse."
+                    );
+                }
+            }
             warehouse.setActive(request.active());
         }
 
@@ -90,4 +108,3 @@ public class WarehouseService {
         );
     }
 }
-
