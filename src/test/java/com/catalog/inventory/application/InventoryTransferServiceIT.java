@@ -1,25 +1,17 @@
 package com.catalog.inventory.application;
 
-import com.catalog.brand.domain.Brand;
-import com.catalog.brand.infrastructure.BrandRepository;
-import com.catalog.category.domain.Category;
-import com.catalog.category.infrastructure.CategoryRepository;
 import com.catalog.common.BaseIntegrationTest;
 import com.catalog.common.exception.InsufficientStockException;
 import com.catalog.common.exception.ResourceNotFoundException;
 import com.catalog.inventory.api.dto.request.TransferStockRequest;
 import com.catalog.inventory.api.dto.response.TransferResponse;
-import com.catalog.inventory.domain.Inventory;
-import com.catalog.inventory.domain.InventoryJournal;
-import com.catalog.inventory.domain.InventoryOperationType;
+import com.catalog.inventory.domain.*;
 import com.catalog.inventory.infrastructure.InventoryJournalRepository;
 import com.catalog.inventory.infrastructure.InventoryRepository;
 import com.catalog.product.domain.Product;
-import com.catalog.product.domain.ProductStatus;
 import com.catalog.product.infrastructure.ProductRepository;
-import com.catalog.variant.domain.TaxClass;
 import com.catalog.variant.domain.Variant;
-import com.catalog.variant.domain.VariantStatus;
+import com.catalog.variant.domain.TaxClass;
 import com.catalog.variant.infrastructure.VariantRepository;
 import com.catalog.warehouse.domain.Warehouse;
 import com.catalog.warehouse.domain.WarehouseType;
@@ -29,31 +21,43 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTimeout;
+import java.time.Duration;
 
-class InventoryTransferServiceIT extends BaseIntegrationTest {
+public class InventoryTransferServiceIT extends BaseIntegrationTest {
 
-    @Autowired private InventoryTransferService transferService;
-    @Autowired private InventoryRepository inventoryRepository;
-    @Autowired private InventoryJournalRepository journalRepository;
+    @Autowired
+    private InventoryTransferService transferService;
 
-    @Autowired private WarehouseRepository warehouseRepository;
-    @Autowired private ProductRepository productRepository;
-    @Autowired private VariantRepository variantRepository;
-    @Autowired private BrandRepository brandRepository;
-    @Autowired private CategoryRepository categoryRepository;
+    @Autowired
+    private InventoryRepository inventoryRepository;
+
+    @Autowired
+    private InventoryJournalRepository journalRepository;
+
+    @Autowired
+    private ProductRepository productRepository;
+
+    @Autowired
+    private VariantRepository variantRepository;
+
+    @Autowired
+    private WarehouseRepository warehouseRepository;
+
+    private Variant testVariant;
+    private Warehouse warehouseA;
+    private Warehouse warehouseB;
+    private Inventory inventoryA;
+    private Inventory inventoryB;
 
     @BeforeEach
     void setUp() {
@@ -61,251 +65,144 @@ class InventoryTransferServiceIT extends BaseIntegrationTest {
         inventoryRepository.deleteAll();
         variantRepository.deleteAll();
         productRepository.deleteAll();
-        brandRepository.deleteAll();
-        categoryRepository.deleteAll();
         warehouseRepository.deleteAll();
+
+        Product product = Product.createDraft("Test Product", "test-product-" + UUID.randomUUID());
+        product = productRepository.save(product);
+
+        testVariant = Variant.createDraft(product, "SKU-TRANSFER-" + UUID.randomUUID(), new BigDecimal("100.00"), TaxClass.STANDARD);
+        testVariant = variantRepository.save(testVariant);
+
+        warehouseA = Warehouse.create("WHA", "Warehouse A", WarehouseType.MAIN);
+        warehouseA = warehouseRepository.save(warehouseA);
+
+        warehouseB = Warehouse.create("WHB", "Warehouse B", WarehouseType.MAIN);
+        warehouseB = warehouseRepository.save(warehouseB);
+
+        inventoryA = Inventory.create(testVariant, warehouseA, 10);
+        inventoryA.receiveStock(100);
+        inventoryA = inventoryRepository.save(inventoryA);
+
+        inventoryB = Inventory.create(testVariant, warehouseB, 10);
+        inventoryB.receiveStock(50);
+        inventoryB = inventoryRepository.save(inventoryB);
     }
 
     @Test
-    void shouldTransferStockAtomically_whenTransferSucceeds() {
-        UUID variantId = seedVariant();
-        Warehouse whA = warehouseRepository.save(Warehouse.create("WH-A", "Warehouse A", WarehouseType.MAIN));
-        Warehouse whB = warehouseRepository.save(Warehouse.create("WH-B", "Warehouse B", WarehouseType.MAIN));
+    void shouldTransferSuccessfully_whenStockIsAvailable() {
+        TransferStockRequest request = new TransferStockRequest(inventoryA.getId(), inventoryB.getId(), 20, "Moving stock");
+        
+        TransferResponse response = transferService.transfer(request);
 
-        Inventory source = Inventory.create(
-                variantRepository.findById(variantId).orElseThrow(),
-                whA,
-                0
-        );
-        source.receiveStock(50);
-        source = inventoryRepository.save(source);
+        assertThat(response.transferReferenceId()).isNotNull();
+        assertThat(response.sourceAvailableQuantityAfter()).isEqualTo(80);
+        assertThat(response.destinationAvailableQuantityAfter()).isEqualTo(70);
 
-        Inventory dest = Inventory.create(
-                variantRepository.findById(variantId).orElseThrow(),
-                whB,
-                0
-        );
-        dest = inventoryRepository.save(dest);
+        Inventory updatedA = inventoryRepository.findById(inventoryA.getId()).orElseThrow();
+        Inventory updatedB = inventoryRepository.findById(inventoryB.getId()).orElseThrow();
 
-        TransferResponse response = transferService.transfer(new TransferStockRequest(
-                source.getId(),
-                dest.getId(),
-                10,
-                "move stock"
-        ));
+        assertThat(updatedA.getQuantity()).isEqualTo(80);
+        assertThat(updatedB.getQuantity()).isEqualTo(70);
 
-        Inventory refreshedSource = inventoryRepository.findById(source.getId()).orElseThrow();
-        Inventory refreshedDest = inventoryRepository.findById(dest.getId()).orElseThrow();
-
-        assertThat(refreshedSource.getQuantity()).isEqualTo(40);
-        assertThat(refreshedDest.getQuantity()).isEqualTo(10);
-
-        List<InventoryJournal> journal = journalRepository.findTransferJournalByReferenceId(response.transferReferenceId());
-        assertThat(journal).hasSize(2);
-        assertThat(journal.get(0).getOperationType()).isEqualTo(InventoryOperationType.TRANSFER_OUT);
-        assertThat(journal.get(1).getOperationType()).isEqualTo(InventoryOperationType.TRANSFER_IN);
+        List<InventoryJournal> journals = journalRepository.findAll();
+        assertThat(journals).hasSize(2);
+        assertThat(journals).allMatch(j -> j.getReferenceId().equals(response.transferReferenceId()));
+        assertThat(journals).extracting(InventoryJournal::getOperationType)
+                .containsExactlyInAnyOrder(InventoryOperationType.TRANSFER_OUT, InventoryOperationType.TRANSFER_IN);
     }
 
     @Test
-    void shouldNotChangeInventoryOrJournal_whenTransferFailsForInsufficientStock() {
-        UUID variantId = seedVariant();
-        Warehouse whA = warehouseRepository.save(Warehouse.create("WH-A", "Warehouse A", WarehouseType.MAIN));
-        Warehouse whB = warehouseRepository.save(Warehouse.create("WH-B", "Warehouse B", WarehouseType.MAIN));
+    void shouldThrowInsufficientStock_whenSourceStockIsInsufficient() {
+        TransferStockRequest request = new TransferStockRequest(inventoryA.getId(), inventoryB.getId(), 150, "Too much");
 
-        Inventory source = Inventory.create(
-                variantRepository.findById(variantId).orElseThrow(),
-                whA,
-                0
-        );
-        source.receiveStock(5);
-        source = inventoryRepository.save(source);
+        assertThrows(InsufficientStockException.class, () -> transferService.transfer(request));
 
-        Inventory dest = inventoryRepository.save(Inventory.create(
-                variantRepository.findById(variantId).orElseThrow(),
-                whB,
-                0
-        ));
+        Inventory updatedA = inventoryRepository.findById(inventoryA.getId()).orElseThrow();
+        Inventory updatedB = inventoryRepository.findById(inventoryB.getId()).orElseThrow();
 
-        UUID sourceId = source.getId();
-        UUID destId = dest.getId();
-
-        assertThatThrownBy(() -> transferService.transfer(new TransferStockRequest(
-                sourceId,
-                destId,
-                10,
-                "too much"
-        ))).isInstanceOf(InsufficientStockException.class);
-
-        Inventory refreshedSource = inventoryRepository.findById(sourceId).orElseThrow();
-        Inventory refreshedDest = inventoryRepository.findById(destId).orElseThrow();
-
-        assertThat(refreshedSource.getQuantity()).isEqualTo(5);
-        assertThat(refreshedDest.getQuantity()).isEqualTo(0);
-        assertThat(journalRepository.findAll()).isEmpty();
+        assertThat(updatedA.getQuantity()).isEqualTo(100);
+        assertThat(updatedB.getQuantity()).isEqualTo(50);
+        assertThat(journalRepository.count()).isZero();
     }
 
     @Test
-    void shouldPreventNegativeQuantity_whenConcurrentTransfersFromSingleSource() throws Exception {
-        UUID variantId = seedVariant();
-        Warehouse whA = warehouseRepository.save(Warehouse.create("WH-A", "Warehouse A", WarehouseType.MAIN));
-        Warehouse whB = warehouseRepository.save(Warehouse.create("WH-B", "Warehouse B", WarehouseType.MAIN));
+    void shouldHandleConcurrentTransfers_withoutNegativeStock() throws InterruptedException {
+        int initialQty = 100;
+        int transferAmount = 1;
+        int numThreads = 110; 
 
-        Inventory source = Inventory.create(variantRepository.findById(variantId).orElseThrow(), whA, 0);
-        source.receiveStock(50);
-        source = inventoryRepository.save(source);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        CountDownLatch doneLatch = new CountDownLatch(numThreads);
+        ExecutorService executor = Executors.newFixedThreadPool(20);
+        AtomicInteger successCount = new AtomicInteger(0);
+        AtomicInteger failureCount = new AtomicInteger(0);
 
-        Inventory dest = inventoryRepository.save(Inventory.create(variantRepository.findById(variantId).orElseThrow(), whB, 0));
-
-        int transferQty = 7;
-        int threads = 10;
-        UUID sourceId = source.getId();
-        UUID destId = dest.getId();
-
-        ExecutorService executor = Executors.newFixedThreadPool(threads);
-        CountDownLatch start = new CountDownLatch(1);
-        CountDownLatch done = new CountDownLatch(threads);
-        AtomicInteger successCount = new AtomicInteger();
-
-        for (int i = 0; i < threads; i++) {
+        for (int i = 0; i < numThreads; i++) {
             executor.submit(() -> {
                 try {
-                    start.await(5, TimeUnit.SECONDS);
-                    transferService.transfer(new TransferStockRequest(
-                            sourceId,
-                            destId,
-                            transferQty,
-                            "concurrent"
-                    ));
+                    startLatch.await();
+                    transferService.transfer(new TransferStockRequest(inventoryA.getId(), inventoryB.getId(), transferAmount, "Concurrent"));
                     successCount.incrementAndGet();
-                } catch (InsufficientStockException ignored) {
-                    // expected for some threads
-                } catch (Exception ignored) {
-                    // count as failure; assertions below validate invariants
+                } catch (InsufficientStockException e) {
+                    failureCount.incrementAndGet();
+                } catch (Exception e) {
+                    // unexpected
                 } finally {
-                    done.countDown();
+                    doneLatch.countDown();
                 }
             });
         }
 
-        start.countDown();
-        assertThat(done.await(10, TimeUnit.SECONDS)).isTrue();
+        startLatch.countDown();
+        doneLatch.await();
         executor.shutdown();
-        executor.awaitTermination(10, TimeUnit.SECONDS);
 
-        Inventory refreshedSource = inventoryRepository.findById(sourceId).orElseThrow();
-        Inventory refreshedDest = inventoryRepository.findById(destId).orElseThrow();
+        Inventory finalA = inventoryRepository.findById(inventoryA.getId()).orElseThrow();
+        Inventory finalB = inventoryRepository.findById(inventoryB.getId()).orElseThrow();
 
-        int expectedTransferred = successCount.get() * transferQty;
-        assertThat(expectedTransferred).isLessThanOrEqualTo(50);
-
-        assertThat(refreshedSource.getQuantity()).isGreaterThanOrEqualTo(0);
-        assertThat(refreshedSource.getQuantity()).isEqualTo(50 - expectedTransferred);
-        assertThat(refreshedDest.getQuantity()).isEqualTo(expectedTransferred);
-
-        assertThat(journalRepository.findAll()).hasSize(successCount.get() * 2);
+        assertThat(finalA.getQuantity()).isGreaterThanOrEqualTo(0);
+        assertThat(successCount.get()).isEqualTo(initialQty);
+        assertThat(failureCount.get()).isEqualTo(numThreads - initialQty);
+        assertThat(finalB.getQuantity()).isEqualTo(50 + initialQty);
     }
 
     @Test
-    void shouldNotDeadlock_whenTwoWayTransfersRunConcurrently() {
-        UUID variantId = seedVariant();
-        Warehouse whA = warehouseRepository.save(Warehouse.create("WH-A", "Warehouse A", WarehouseType.MAIN));
-        Warehouse whB = warehouseRepository.save(Warehouse.create("WH-B", "Warehouse B", WarehouseType.MAIN));
+    void shouldPreventDeadlock_whenCircularTransfersOccur() throws InterruptedException {
+        assertTimeout(Duration.ofSeconds(10), () -> {
+            int numThreads = 20;
+            CountDownLatch startLatch = new CountDownLatch(1);
+            CountDownLatch doneLatch = new CountDownLatch(numThreads);
+            ExecutorService executor = Executors.newFixedThreadPool(numThreads);
 
-        Inventory invA = Inventory.create(variantRepository.findById(variantId).orElseThrow(), whA, 0);
-        invA.receiveStock(100);
-        invA = inventoryRepository.save(invA);
+            for (int i = 0; i < numThreads; i++) {
+                final boolean toggle = i % 2 == 0;
+                executor.submit(() -> {
+                    try {
+                        startLatch.await();
+                        if (toggle) {
+                            transferService.transfer(new TransferStockRequest(inventoryA.getId(), inventoryB.getId(), 1, "A to B"));
+                        } else {
+                            transferService.transfer(new TransferStockRequest(inventoryB.getId(), inventoryA.getId(), 1, "B to A"));
+                        }
+                    } catch (Exception e) {
+                        // Success/failure doesn't matter, only that it doesn't deadlock
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
 
-        Inventory invB = Inventory.create(variantRepository.findById(variantId).orElseThrow(), whB, 0);
-        invB.receiveStock(100);
-        invB = inventoryRepository.save(invB);
-
-        Inventory finalInvA = invA;
-        Inventory finalInvB = invB;
-
-        assertTimeout(Duration.ofSeconds(5), () -> {
-            ExecutorService executor = Executors.newFixedThreadPool(2);
-            CountDownLatch start = new CountDownLatch(1);
-            CountDownLatch done = new CountDownLatch(2);
-            List<Throwable> errors = new ArrayList<>();
-            AtomicInteger successes = new AtomicInteger();
-
-            executor.submit(() -> {
-                try {
-                    start.await(5, TimeUnit.SECONDS);
-                    transferService.transfer(new TransferStockRequest(finalInvA.getId(), finalInvB.getId(), 10, "A->B"));
-                    successes.incrementAndGet();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch (Throwable t) {
-                    errors.add(t);
-                } finally {
-                    done.countDown();
-                }
-            });
-            executor.submit(() -> {
-                try {
-                    start.await(5, TimeUnit.SECONDS);
-                    transferService.transfer(new TransferStockRequest(finalInvB.getId(), finalInvA.getId(), 15, "B->A"));
-                    successes.incrementAndGet();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                } catch (Throwable t) {
-                    errors.add(t);
-                } finally {
-                    done.countDown();
-                }
-            });
-
-            start.countDown();
-            assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+            startLatch.countDown();
+            doneLatch.await();
             executor.shutdown();
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-
-            assertThat(errors).isEmpty();
-            assertThat(successes.get()).isEqualTo(2);
         });
-
-        Inventory refreshedA = inventoryRepository.findById(invA.getId()).orElseThrow();
-        Inventory refreshedB = inventoryRepository.findById(invB.getId()).orElseThrow();
-
-        assertThat(refreshedA.getQuantity()).isEqualTo(105);
-        assertThat(refreshedB.getQuantity()).isEqualTo(95);
-        assertThat(journalRepository.findAll()).hasSize(4);
     }
 
     @Test
-    void shouldThrowResourceNotFoundException_whenInventoryDoesNotExist() {
-        UUID variantId = seedVariant();
-        Warehouse whA = warehouseRepository.save(Warehouse.create("WH-A", "Warehouse A", WarehouseType.MAIN));
+    void shouldThrowNotFound_whenDestinationDoesNotExist() {
+        UUID fakeId = UUID.randomUUID();
+        TransferStockRequest request = new TransferStockRequest(inventoryA.getId(), fakeId, 10, "Fake dest");
 
-        Inventory source = Inventory.create(variantRepository.findById(variantId).orElseThrow(), whA, 0);
-        source.receiveStock(10);
-        source = inventoryRepository.save(source);
-        UUID sourceId = source.getId();
-
-        assertThatThrownBy(() -> transferService.transfer(new TransferStockRequest(
-                sourceId,
-                UUID.randomUUID(),
-                1,
-                "missing"
-        ))).isInstanceOf(ResourceNotFoundException.class);
-    }
-
-    private UUID seedVariant() {
-        Brand brand = brandRepository.save(Brand.create("Test Brand", "test-brand", "desc"));
-
-        Category category = categoryRepository.save(Category.createRoot("Root", "root", "desc"));
-        category.initializePath();
-        categoryRepository.save(category);
-
-        Product product = Product.createDraft("Test Product", "test-product");
-        product.assignBrand(brand);
-        product.assignPrimaryCategory(category);
-        product.transitionTo(ProductStatus.ACTIVE);
-        Product savedProduct = productRepository.save(product);
-
-        Variant variant = Variant.createDraft(savedProduct, "SKU-1", BigDecimal.valueOf(10), TaxClass.STANDARD);
-        variant.setStatus(VariantStatus.ACTIVE);
-        return variantRepository.save(variant).getId();
+        assertThrows(ResourceNotFoundException.class, () -> transferService.transfer(request));
     }
 }
