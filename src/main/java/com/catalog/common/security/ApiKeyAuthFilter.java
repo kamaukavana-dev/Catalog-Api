@@ -15,6 +15,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Set;
@@ -57,7 +59,19 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
         }
 
         String apiKey = request.getHeader(API_KEY_HEADER);
-        if (apiKey == null || apiKey.isBlank() || !allowedKeys.contains(apiKey.trim())) {
+        boolean isValid = false;
+
+        if (apiKey != null && !apiKey.isBlank()) {
+            byte[] apiKeyBytes = apiKey.trim().getBytes(StandardCharsets.UTF_8);
+            for (String allowedKey : allowedKeys) {
+                byte[] allowedKeyBytes = allowedKey.getBytes(StandardCharsets.UTF_8);
+                if (MessageDigest.isEqual(apiKeyBytes, allowedKeyBytes)) {
+                    isValid = true;
+                }
+            }
+        }
+
+        if (!isValid) {
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);
             writeErrorResponse(request, response,
