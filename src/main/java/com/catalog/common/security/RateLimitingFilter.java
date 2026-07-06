@@ -45,6 +45,15 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     private final RedisTokenBucketRateLimiter redisRateLimiter;
     private final ObjectMapper objectMapper;
 
+    /**
+     * Number of trusted reverse proxies / load balancers in front of this service.
+     * The client IP is taken {@code trustedProxyCount} positions from the right end
+     * of X-Forwarded-For, because each trusted hop appends the address it saw. The
+     * leftmost entries are attacker-controlled and must never be used as the rate-limit
+     * identity. Set to 0 to ignore X-Forwarded-For entirely (direct exposure).
+     */
+    private final int trustedProxyCount;
+
     // Bucket per client IP — bounded + expired to avoid unbounded memory growth.
     private final Cache<String, Bucket> readBuckets = Caffeine.newBuilder()
             .maximumSize(100_000)
@@ -59,9 +68,12 @@ public class RateLimitingFilter extends OncePerRequestFilter {
             .expireAfterAccess(Duration.ofMinutes(10))
             .build();
 
-    public RateLimitingFilter(RedisTokenBucketRateLimiter redisRateLimiter, ObjectMapper objectMapper) {
+    public RateLimitingFilter(RedisTokenBucketRateLimiter redisRateLimiter,
+                              ObjectMapper objectMapper,
+                              @org.springframework.beans.factory.annotation.Value("${catalog.security.trusted-proxy-count:1}") int trustedProxyCount) {
         this.redisRateLimiter = redisRateLimiter;
         this.objectMapper = objectMapper;
+        this.trustedProxyCount = Math.max(0, trustedProxyCount);
     }
 
     @Override
@@ -139,14 +151,23 @@ public class RateLimitingFilter extends OncePerRequestFilter {
     }
 
     private String extractClientIp(HttpServletRequest request) {
-        // Respect proxy headers when behind a load balancer
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
-        }
-        String realIp = request.getHeader("X-Real-IP");
-        if (realIp != null && !realIp.isBlank()) {
-            return realIp;
+        // Only trust X-Forwarded-For when we know how many proxies sit in front of us.
+        // Each trusted hop appends the peer it saw, so the genuine client address is
+        // `trustedProxyCount` entries from the right. Taking the leftmost entry (the old
+        // behaviour) trusts an attacker-supplied value, letting a client mint a fresh
+        // rate-limit bucket per request by rotating the header — defeating rate limiting.
+        if (trustedProxyCount > 0) {
+            String forwarded = request.getHeader("X-Forwarded-For");
+            if (forwarded != null && !forwarded.isBlank()) {
+                String[] hops = forwarded.split(",");
+                int idx = hops.length - trustedProxyCount;
+                if (idx >= 0 && idx < hops.length) {
+                    String candidate = hops[idx].trim();
+                    if (!candidate.isBlank()) {
+                        return candidate;
+                    }
+                }
+            }
         }
         return request.getRemoteAddr();
     }
