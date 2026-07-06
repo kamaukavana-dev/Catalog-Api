@@ -29,6 +29,12 @@ public class StorageConfig {
     private int presignedUrlExpiryMinutes = 10;
     private long maxFileSizeBytes = 10_485_760L;
     private int pendingCleanupThresholdHours = 24;
+    // Bound every S3 call so a slow/hung endpoint cannot block a caller indefinitely.
+    // Image processing runs these calls inside a DB @Transactional; an unbounded hang
+    // would pin a Hikari connection until the pool (size 10) is exhausted app-wide.
+    private int connectionTimeoutSeconds = 5;
+    private int socketTimeoutSeconds = 10;
+    private int apiCallTimeoutSeconds = 15;
     private List<String> allowedContentTypes =
             List.of("image/jpeg", "image/png", "image/webp");
 
@@ -42,7 +48,13 @@ public class StorageConfig {
                 .credentialsProvider(credentials)
                 .endpointOverride(URI.create(endpoint))
                 .forcePathStyle(true)
-                .httpClient(software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient.builder().build())
+                .overrideConfiguration(o -> o
+                        .apiCallTimeout(java.time.Duration.ofSeconds(apiCallTimeoutSeconds))
+                        .apiCallAttemptTimeout(java.time.Duration.ofSeconds(socketTimeoutSeconds)))
+                .httpClient(software.amazon.awssdk.http.urlconnection.UrlConnectionHttpClient.builder()
+                        .connectionTimeout(java.time.Duration.ofSeconds(connectionTimeoutSeconds))
+                        .socketTimeout(java.time.Duration.ofSeconds(socketTimeoutSeconds))
+                        .build())
                 .build();
     }
 
