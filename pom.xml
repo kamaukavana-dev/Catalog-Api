@@ -302,6 +302,19 @@
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <version>0.8.15</version>
+                <configuration>
+                    <!-- Exclude generated sources from coverage: they are produced by
+                         annotation processors (QueryDSL metamodel Q-classes, MapStruct
+                         *MapperImpl), are never hand-written, and reporting them as
+                         "uncovered" both understates the real number and hides where
+                         genuine test gaps are. -->
+                    <excludes>
+                        <exclude>**/domain/Q*.class</exclude>
+                        <exclude>**/audit/Q*.class</exclude>
+                        <exclude>**/*MapperImpl.class</exclude>
+                        <exclude>**/CatalogApplication.class</exclude>
+                    </excludes>
+                </configuration>
                 <executions>
                     <execution>
                         <id>prepare-unit</id>
