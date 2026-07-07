@@ -1,6 +1,7 @@
 package com.catalog.product.application;
 
 import com.catalog.common.exception.BusinessRuleViolationException;
+import com.catalog.common.exception.ResourceNotFoundException;
 import com.catalog.product.domain.BulkProductUpdateJob;
 import com.catalog.product.infrastructure.BulkProductUpdateJobRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -97,5 +98,56 @@ class ProductBulkUpdateServiceTest {
 
         assertNotNull(job);
         verify(jobRepository).save(any(BulkProductUpdateJob.class));
+    }
+
+    @Test
+    void submitUpdate_whenFileEmpty_throwsAndNeverPersists() {
+        UUID sessionId = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "empty.csv", "text/csv", new byte[0]);
+
+        BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
+                () -> bulkUpdateService.submitUpdate(sessionId, file));
+        assertTrue(ex.getMessage().contains("empty"), ex.getMessage());
+        verify(jobRepository, never()).save(any());
+    }
+
+    @Test
+    void submitUpdate_whenFileExceedsMaxSize_throws() {
+        UUID sessionId = UUID.randomUUID();
+        // Service was constructed with a 1 MiB limit; one byte over trips the size guard.
+        byte[] tooBig = new byte[(1024 * 1024) + 1];
+        MockMultipartFile file = new MockMultipartFile("file", "big.csv", "text/csv", tooBig);
+
+        BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
+                () -> bulkUpdateService.submitUpdate(sessionId, file));
+        assertTrue(ex.getMessage().contains("maximum"), ex.getMessage());
+        verify(jobRepository, never()).save(any());
+    }
+
+    @Test
+    void submitUpdate_whenContentTypeNull_throwsInvalidType() {
+        UUID sessionId = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "mystery.bin", null, "product_id,name".getBytes());
+
+        BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
+                () -> bulkUpdateService.submitUpdate(sessionId, file));
+        assertTrue(ex.getMessage().contains("Invalid file type"), ex.getMessage());
+    }
+
+    @Test
+    void getJobStatus_whenPresent_returnsJob() {
+        UUID jobId = UUID.randomUUID();
+        BulkProductUpdateJob existing = BulkProductUpdateJob.create(UUID.randomUUID());
+        when(jobRepository.findById(jobId)).thenReturn(Optional.of(existing));
+
+        assertEquals(existing, bulkUpdateService.getJobStatus(jobId));
+    }
+
+    @Test
+    void getJobStatus_whenMissing_throwsResourceNotFound() {
+        UUID jobId = UUID.randomUUID();
+        when(jobRepository.findById(jobId)).thenReturn(Optional.empty());
+
+        assertThrows(ResourceNotFoundException.class, () -> bulkUpdateService.getJobStatus(jobId));
     }
 }
