@@ -1,5 +1,10 @@
 # AUDIT REPORT — CATALOG-API
 
+> **Historical (2026-06-16/17). Superseded by [`DOCS_AUDIT_2026-07.md`](DOCS_AUDIT_2026-07.md)
+> and [`README.md`](README.md).** The coverage (~39.9 % instr) and test-count (103) figures
+> in this report are stale; the current build measures **74.1 % instr / 60.6 % branch,
+> 238 tests**. Kept for history — do not cite its numbers as current.
+
 ## SUMMARY
 - **CRITICAL**: 0
 - **HIGH**: 4

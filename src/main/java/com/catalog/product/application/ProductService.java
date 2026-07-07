@@ -114,6 +114,11 @@ public class ProductService {
         ProductStatus from = product.getStatus();
         String oldSlug = product.getSlug();
 
+        // Reject an illegal transition (e.g. ARCHIVED -> anything) before evaluating the
+        // ACTIVE-specific preconditions below. Otherwise activating an ARCHIVED product
+        // reports the misleading "needs an active variant" instead of "illegal transition".
+        from.assertCanTransitionTo(request.targetStatus());
+
         if (request.targetStatus() == ProductStatus.ACTIVE) {
             // Precondition 1: at least one ACTIVE variant
             long activeVariantCount = variantRepository.countActiveByProductId(id);

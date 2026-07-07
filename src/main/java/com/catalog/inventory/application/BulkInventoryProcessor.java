@@ -63,18 +63,21 @@ public class BulkInventoryProcessor {
                 int reservedBefore = inventory.getReservedQuantity();
 
                 InventoryOperationType opType;
-                switch (row.adjustmentType().toUpperCase()) {
+                switch (row.adjustmentType().trim().toUpperCase()) {
                     case "RECEIVE" -> {
                         inventory.receiveStock(row.quantity());
                         opType = InventoryOperationType.RECEIVE;
                     }
-                    case "RECONCILE" -> {
+                    // Accept both the short form and the operation-type spelling: earlier
+                    // versions of this error message advertised "RECONCILIATION" as the
+                    // valid input, so files in the wild use it.
+                    case "RECONCILE", "RECONCILIATION" -> {
                         inventory.reconcileQuantity(row.quantity());
                         opType = InventoryOperationType.RECONCILIATION;
                     }
                     default -> throw new IllegalArgumentException(
                             "Unknown adjustment type: " + row.adjustmentType() +
-                                    ". Allowed: RECEIVE, RECONCILIATION");
+                                    ". Allowed: RECEIVE, RECONCILE");
                 }
 
                 toSave.add(inventory);

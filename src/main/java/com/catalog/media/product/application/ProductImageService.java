@@ -49,8 +49,14 @@ public class ProductImageService {
                 "Cannot add images to archived product '" + product.getName() + "'.");
         }
 
-        UUID imageId = UUID.randomUUID();
-        String storageKey = storageConfig.buildProductImageKey(productId, imageId);
+        // The storage object key needs a unique token up front — it is embedded in the
+        // presigned URL handed to the client before the row is flushed. Use a standalone
+        // UUID for the key rather than the entity id: BaseEntity ids are Hibernate-generated
+        // (@GeneratedValue), so pre-assigning image.setId(...) makes Hibernate treat the row
+        // as a detached update with a null @Version and the save fails. Let Hibernate assign
+        // the id; the key's uniqueness does not depend on it.
+        UUID objectToken = UUID.randomUUID();
+        String storageKey = storageConfig.buildProductImageKey(productId, objectToken);
 
         StorageService.PresignedUploadDetails presigned =
                 storageService.generatePresignedPut(storageKey, request.contentType());
@@ -58,7 +64,6 @@ public class ProductImageService {
         ProductImage image = ProductImage.createPending(
                 product, storageKey, request.altText(), request.contentType());
 
-        image.setId(imageId);
         ProductImage saved = imageRepository.save(image);
 
         log.info("Upload session created: productId={} imageId={} key={}",
@@ -72,7 +77,12 @@ public class ProductImageService {
         );
     }
 
-    @Transactional
+    // A rejected upload (oversized / disallowed real content type) deletes the S3 object and
+    // soft-deletes the row, then signals the client by throwing. Without noRollbackFor that
+    // BusinessRuleViolationException would roll the soft-delete back, leaving an active DB row
+    // that points at an object we already deleted from storage. The only writes on the throwing
+    // paths are that intended soft-delete, so committing them is correct.
+    @Transactional(noRollbackFor = BusinessRuleViolationException.class)
     public ProductImageResponse confirmUpload(UUID productId, UUID imageId) {
         ProductImage image = findImageOrThrow(imageId);
         assertBelongsToProduct(image, productId);
