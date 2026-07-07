@@ -174,7 +174,7 @@ class ProductImageServiceIT extends BaseIntegrationTest {
 
         ProductImage ready = persist(ImageStatus.READY);
         ProductImageResponse res = imageService.setAsPrimary(product.getId(), ready.getId());
-        assertThat(res.isPrimary()).isTrue();
+        assertThat(res.primary()).isTrue();
     }
 
     @Test
