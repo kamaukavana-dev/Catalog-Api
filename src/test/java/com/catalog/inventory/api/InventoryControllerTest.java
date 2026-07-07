@@ -57,6 +57,10 @@ class InventoryControllerTest {
         ValueOperations<String, String> ops = (ValueOperations<String, String>) Mockito.mock(ValueOperations.class);
         when(redisTemplate.opsForValue()).thenReturn(ops);
         when(ops.get(anyString())).thenReturn(null);
+        // IdempotencyFilter claims the key atomically via setIfAbsent (SET NX). TRUE means
+        // this request won the claim and proceeds; stub it so a first-time request is not
+        // treated as an in-flight duplicate (which short-circuits to 409 Idempotency Conflict).
+        when(ops.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
 
         // RateLimitingFilter: allow by default.
         when(redisTokenBucketRateLimiter.tryConsume(anyString(), anyInt(), any(Duration.class)))
