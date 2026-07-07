@@ -5,7 +5,9 @@ import com.catalog.attribute.domain.AttributeType;
 import com.catalog.attribute.domain.AttributeValue;
 import com.catalog.attribute.infrastructure.AttributeValueRepository;
 import com.catalog.common.exception.BusinessRuleViolationException;
+import com.catalog.common.exception.ResourceNotFoundException;
 import com.catalog.product.domain.Product;
+import com.catalog.product.domain.ProductStatus;
 import com.catalog.product.infrastructure.ProductRepository;
 import com.catalog.variant.api.dto.request.CreateVariantRequest;
 import com.catalog.variant.api.mapper.VariantMapper;
@@ -138,6 +140,58 @@ class VariantServiceTest {
         assertThatThrownBy(() -> variantService.createVariant(productId, request))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("multiple values for the same attribute type");
+    }
+
+    @Test
+    void shouldRejectVariantCreationOnArchivedProduct() {
+        UUID productId = UUID.randomUUID();
+        Product product = Product.createDraft("Test", "test");
+        product.transitionTo(ProductStatus.ARCHIVED); // DRAFT -> ARCHIVED is a legal transition
+        when(productRepository.findActiveById(productId)).thenReturn(Optional.of(product));
+
+        CreateVariantRequest request = new CreateVariantRequest(
+                null, BigDecimal.valueOf(50), null, null, null, null,
+                TaxClass.STANDARD, Set.of(), null, null, null, null);
+
+        assertThatThrownBy(() -> variantService.createVariant(productId, request))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("archived");
+    }
+
+    @Test
+    void shouldThrowWhenSomeAttributeValueIdsDoNotResolve() {
+        UUID productId = UUID.randomUUID();
+        UUID missingId = UUID.randomUUID();
+        Product product = Product.createDraft("Test", "test");
+        when(productRepository.findActiveById(productId)).thenReturn(Optional.of(product));
+        // Repository returns nothing for the requested id -> resolution is incomplete.
+        when(attributeValueRepository.findActiveByIds(Set.of(missingId))).thenReturn(Set.of());
+
+        CreateVariantRequest request = new CreateVariantRequest(
+                null, BigDecimal.valueOf(50), null, null, null, null,
+                TaxClass.STANDARD, Set.of(missingId), null, null, null, null);
+
+        assertThatThrownBy(() -> variantService.createVariant(productId, request))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void shouldFailWhenNoUniqueSkuCanBeGenerated() {
+        UUID productId = UUID.randomUUID();
+        Product product = Product.createDraft("Test", "test");
+        when(productRepository.findActiveById(productId)).thenReturn(Optional.of(product));
+        when(variantRepository.findActiveByProductIdWithAttributes(productId)).thenReturn(List.of());
+        when(skuGenerator.generate()).thenReturn("SKU-DUP");
+        // Every generated SKU already exists, so all three attempts collide.
+        when(variantRepository.existsByInternalSku("SKU-DUP")).thenReturn(true);
+
+        CreateVariantRequest request = new CreateVariantRequest(
+                null, BigDecimal.valueOf(50), null, null, null, null,
+                TaxClass.STANDARD, Set.of(), null, null, null, null);
+
+        assertThatThrownBy(() -> variantService.createVariant(productId, request))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("unique SKU");
     }
 }
 

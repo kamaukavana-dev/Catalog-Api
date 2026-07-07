@@ -203,8 +203,15 @@ public class VariantServiceIT extends BaseIntegrationTest {
                 product.getId(),
                 createRequest("SHARED-SKU", new BigDecimal("10.00"), TaxClass.STANDARD));
 
+        // Merchant-SKU uniqueness is global, but attribute-combination uniqueness is
+        // per-product. Both variants here carry an empty attribute set, so reusing the same
+        // product would trip the (earlier) attribute-combo check instead of the SKU check.
+        // Put the duplicate SKU on a second product to isolate the merchant-SKU rejection.
+        Product other = productRepository.save(
+                Product.createDraft("Other Product", "other-product-" + UUID.randomUUID()));
+
         assertThatThrownBy(() -> variantService.createVariant(
-                product.getId(),
+                other.getId(),
                 createRequest("SHARED-SKU", new BigDecimal("11.00"), TaxClass.STANDARD)))
                 .isInstanceOf(DuplicateResourceException.class)
                 .hasMessageContaining("SHARED-SKU");
