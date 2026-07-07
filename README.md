@@ -1,341 +1,304 @@
-# catalog-api
+# Catalog API
 
-A production-grade catalog/product REST API for e-commerce backends. It manages the full product domain — products and their variants, brands, categories (as a materialized-path tree), product attributes, warehouses, and per-warehouse inventory with reservations, transfers, and an append-only audit journal — plus asynchronous bulk CSV import for products and inventory. It is built with Spring Boot 3.4 on Java 21 (virtual threads), backed by PostgreSQL for storage and full-text/trigram search, and Redis for distributed rate limiting and idempotency. It is intended for internal/back-office and service-to-service use behind an API gateway, not as a public unauthenticated endpoint.
+A modular-monolith REST API for a product catalog: products and variants, brands,
+categories (materialized-path tree), attributes, warehouses, and per-warehouse
+inventory with reservations, transfers, and an append-only journal. Built on Spring
+Boot 3.4 / Java 21, backed by PostgreSQL (storage + full-text/trigram search) and
+Redis (rate-limit buckets + idempotency claims). It is designed for internal /
+service-to-service use behind a gateway, not as a public unauthenticated endpoint.
+
+> **Status of this document.** Every capability below is traceable to a file in this
+> branch. Numbers under [Testing](#testing) come from running `mvn clean verify` on
+> the current HEAD, not from a prior report. Things that are claimed elsewhere in the
+> repo but are *not* actually built (or not enforced) are called out in
+> [Known limitations](#known-limitations). See [`DOCS_AUDIT_2026-07.md`](DOCS_AUDIT_2026-07.md)
+> for the full claim-by-claim audit behind this rewrite.
+
+---
 
 ## Architecture
 
-The codebase follows a Clean/Hexagonal layering, organized by bounded context (`product`, `variant`, `brand`, `category`, `attribute`, `warehouse`, `inventory`, `media`). Each context is split into `api` (controllers + DTOs), `application` (use-case services), `domain` (entities + business rules), and `infrastructure` (Spring Data repositories).
+The service is a single deployable (`spring-boot:run` / one JAR). Code is organized by
+**bounded context** (`product`, `variant`, `brand`, `category`, `attribute`,
+`inventory`, `warehouse`, `media`, `order`), each split into `api` (controllers +
+record DTOs), `application` (use-case services), `domain` (JPA entities + rules), and
+`infrastructure` (Spring Data repositories). Cross-context types are shared through
+`common`.
 
-```mermaid
-flowchart TD
-    Client[Client / API Gateway]
+The diagram below is **generated from the actual `import com.catalog.*` statements** by
+[`docs/images/generate_diagrams.py`](docs/images/generate_diagrams.py) — re-run it after
+refactors to keep it honest.
 
-    subgraph CrossCutting[Cross-cutting servlet filters]
-        AK[ApiKeyAuthFilter]
-        RL[RateLimitingFilter - Redis token bucket]
-        ID[IdempotencyFilter - Redis]
-        SH[SecurityHeadersFilter]
-        MDC[MdcRequestFilter - tracing]
-    end
+![Module dependencies](docs/images/module-dependencies.svg)
 
-    subgraph API[api layer - @RestController]
-        PC[ProductController]
-        VC[VariantController]
-        BC[BrandController]
-        CC[CategoryController]
-        AC[AttributeController]
-        WC[WarehouseController]
-        IC[InventoryController]
-        BIC[BulkImportController]
-    end
+What this diagram makes visible and honest about:
+- **`product` is the hub** (variant, media, brand, category, attribute all connect to it).
+- **`common` is not a pure leaf** — it imports back into `product`/`inventory`/`media`
+  (metrics and cache-eviction glue), so it is a shared kernel with some inward coupling,
+  not a dependency-free base layer.
+- **`order` is unreachable** — `order/application/OrderService.java` has no controller and
+  no callers (see [Known limitations](#known-limitations)).
 
-    subgraph APP[application layer - use-case services]
-        PS[ProductService / Search / BulkUpdate]
-        INV[InventoryService / TransferService / BulkInventoryService]
-        OTH[Brand / Category / Attribute / Variant / Warehouse services]
-    end
+### Representative write path — idempotent inventory reservation
 
-    subgraph DOM[domain layer - entities + invariants]
-        E[Product, Variant, Brand, Category, Inventory, Reservation, ...]
-    end
+This traces the real filter chain (`@Order` values as declared) and
+`InventoryService.reserveStock`. The idempotency **atomic claim** is drawn as its own
+stage because it is a specific, defensible design point (see
+[Key design decisions](#key-design-decisions)).
 
-    subgraph INFRA[infrastructure layer - Spring Data JPA repositories]
-        R[(repositories)]
-    end
+![Reservation write path](docs/images/reservation-write-path.svg)
 
-    PG[(PostgreSQL 16)]
-    RD[(Redis 7)]
-    S3[(S3-compatible object storage)]
+### Core data model
 
-    Client --> AK --> RL --> ID --> SH --> MDC --> API
-    RL -.-> RD
-    ID -.-> RD
-    API --> APP --> DOM --> INFRA --> PG
-    INV -.-> RD
-    APP -.-> S3
+Generated from the `@Entity` classes and Flyway migrations `V1`–`V17`. All catalog
+tables inherit `BaseEntity` (`id` UUID, `version`, `created_at`, `updated_at`,
+`deleted_at` soft-delete). `inventory_journal` is the exception — it is deliberately not
+a `BaseEntity` (see design decisions).
 
-    GEH[GlobalExceptionHandler - sanitized error envelopes]
-    AUD[JPA Auditing - BaseEntity created/updated/by]
-    OBS[Micrometer + OTLP tracing + Prometheus]
-    API -.-> GEH
-    INFRA -.-> AUD
-    APP -.-> OBS
-```
+![Core ERD](docs/images/erd-core.svg)
 
-## Tech Stack
+---
 
-| Component | Technology | Version |
-|---|---|---|
-| Language | Java | 21 |
-| Framework | Spring Boot | 3.4.5 |
-| Build | Maven | 3.9+ (Dockerfile builds with 3.9.9) |
-| Database | PostgreSQL | 16 (Alpine image); driver via Spring Boot BOM |
-| Migrations | Flyway (core + postgresql) | 10.22.0 |
-| Cache / rate limit / idempotency | Redis (Lettuce client) | 7 (Alpine image) |
-| In-process cache | Caffeine | via Spring Boot BOM |
-| ORM | Hibernate / Spring Data JPA | via Spring Boot 3.4.5 |
-| Query | QueryDSL (jakarta) | 5.1.0 |
-| Mapping | MapStruct | 1.6.3 |
-| Boilerplate | Lombok | 1.18.36 |
-| Object storage | AWS SDK v2 (S3) | BOM 2.25.11 |
-| Rate limiting (fallback) | Bucket4j | 8.10.1 |
-| Resilience | Resilience4j (Spring Boot 3) | 2.2.0 |
-| Observability | Micrometer Tracing (OTel bridge), OTLP exporter, Prometheus registry | via Spring Boot BOM |
-| JSON logging | logstash-logback-encoder | 7.4 |
-| CSV | commons-csv | 1.10.0 |
-| Testing | JUnit 5, Testcontainers (postgresql, junit-jupiter), WireMock | Testcontainers 1.21.4, WireMock 3.0.4 |
-| Coverage | JaCoCo | 0.8.15 |
-| Security audit | OWASP dependency-check | 9.0.9 |
+## Tech stack
 
-## Prerequisites
+Versions are taken directly from [`pom.xml`](pom.xml) (and the Spring Boot 3.4.5 BOM
+where a version is managed transitively).
 
-| Tool | Version | Required for |
-|---|---|---|
-| JDK | 21 | Runtime + build |
-| Maven | 3.9+ | Build |
-| Docker | Engine with a running daemon | Tests (Testcontainers) and the easiest local Postgres/Redis |
-| PostgreSQL | 16 | Runtime datastore (via Docker or a local install) |
-| Redis | 7 | Runtime rate limiting + idempotency (via Docker or a local install) |
+| Area | Technology | Version | Source |
+|------|------------|---------|--------|
+| Language | Java | 21 | `pom.xml` `<java.version>` |
+| Framework | Spring Boot | 3.4.5 | parent POM |
+| Web / JPA / Redis / Validation / AOP / Actuator | Spring Boot starters | 3.4.5 | BOM |
+| Database | PostgreSQL | 16 (`postgres:16-alpine`) | `docker-compose.yml`, Testcontainers |
+| Migrations | Flyway | 10.22.0 | `pom.xml` |
+| Cache (local) | Caffeine | via BOM | `pom.xml` |
+| Cache / rate-limit / idempotency store | Redis 7 (`redis:7-alpine`), Lettuce | via BOM | `docker-compose.yml` |
+| Query | QueryDSL (jakarta) | 5.1.0 | `pom.xml` |
+| Mapping | MapStruct | 1.6.3 | `pom.xml` |
+| Boilerplate | Lombok | 1.18.36 | `pom.xml` |
+| Object storage | AWS SDK v2 (S3) | BOM 2.25.11 | `pom.xml` |
+| Rate limiting | Bucket4j | 8.10.1 | `pom.xml` |
+| Resilience | Resilience4j (Spring Boot 3) | 2.2.0 | `pom.xml`, `resilience4j.yml` |
+| CSV | commons-csv | 1.10.0 | `pom.xml` |
+| Tracing / metrics | Micrometer Tracing (OTel bridge), OTLP exporter, Prometheus registry | via BOM | `pom.xml` |
+| Logging | logstash-logback-encoder | 7.4 | `pom.xml` |
+| Tests | JUnit 5, Testcontainers, WireMock | TC 1.21.4, WireMock 3.0.4 | `pom.xml` |
+| Coverage | JaCoCo | 0.8.15 | `pom.xml` |
+| Dependency CVE scan | OWASP dependency-check | 9.0.9 | `pom.xml` |
+| SQL logging (local profile only) | P6Spy | 1.9.1 | `pom.xml` `local` profile |
 
-Docker is **required for the test suite**: integration tests spin up PostgreSQL via Testcontainers, so the Docker daemon must be running. For runtime you may use either Dockerized or natively-installed PostgreSQL and Redis.
+Runtime dependencies: **PostgreSQL 16** and **Redis 7**. **Docker is required to run the
+test suite** (Testcontainers starts real Postgres containers).
 
-## Local Setup
+---
+
+## Key design decisions
+
+Five decisions that are non-obvious, with the tradeoff each one accepts.
+
+1. **Atomic Redis `SET NX` idempotency claim, with an explicit Redis-down policy —
+   not a DB unique constraint alone.**
+   `IdempotencyFilter` claims the key with a single `setIfAbsent` (`SET key <in-progress>
+   NX PX 30s`) *before* executing; exactly one concurrent retry wins, losers replay the
+   cached 2xx or get `409`. When Redis is unreachable it **fails closed (503)** for
+   stock/money paths (`/api/v1/inventory`, `/transfers`, bulk apply) and **fails open**
+   for CRUD guarded by DB unique constraints.
+   *Tradeoff:* state-critical writes now hard-depend on Redis (they 503 during a Redis
+   outage), in exchange for closing a check-then-act double-execute race that a DB unique
+   index cannot catch for non-unique resources. — `common/security/IdempotencyFilter.java`
+
+2. **Denormalized `product_search_projection` + Postgres GIN (`tsvector`) + `pg_trgm`,
+   not Elasticsearch.**
+   Search reads a denormalized projection table with a GIN full-text index and trigram
+   indexes; the projection is refreshed from domain events **after the writing
+   transaction commits** (`@TransactionalEventListener(AFTER_COMMIT)`).
+   *Tradeoff:* avoids Elasticsearch's operational cost and dual-write/sync problem, but
+   search is **eventually consistent** (a committed write is briefly not yet searchable)
+   and scale is bounded by Postgres — [ADR-0002](docs/adr/0002-postgresql-native-search-over-elasticsearch.md)
+   targets up to ~100k products. — `product/application/search/*`, `db/migration/V9__*.sql`
+
+3. **Append-only `inventory_journal` that is not a `BaseEntity`.**
+   Every stock change writes an immutable journal row (before/after/delta for both
+   physical and reserved quantity, operation type, actor, reference). The entity has no
+   update path and no soft-delete.
+   *Tradeoff:* a full audit/reconciliation trail at the cost of extra write volume.
+   **Caveat (see limitations):** immutability is enforced by *application convention*
+   only — the claimed database-level `REVOKE UPDATE/DELETE` is **not** present in the
+   migrations. — `inventory/domain/InventoryJournal.java`, `db/migration/V8__*.sql`
+
+4. **Optimistic locking (`@Version`) + bounded exponential-backoff retry for inventory
+   concurrency, not pessimistic row locks.**
+   Inventory updates use JPA `@Version`; `InventoryService` is `@Retryable` on
+   `OptimisticLockingFailureException` with configurable attempts/backoff
+   (`CATALOG_INVENTORY_RETRY_*`).
+   *Tradeoff:* high throughput and no long-held row locks under low contention, but under
+   high contention a reservation retries up to N times and can still fail with a conflict.
+   — `common/audit/BaseEntity.java`, `inventory/application/InventoryService.java`
+
+5. **Modular monolith by bounded context, not microservices.**
+   One deploy unit, in-process calls, one database, transactional integrity within a
+   context ([ADR-0001](docs/adr/0001-modular-monolith-over-microservices.md)).
+   *Tradeoff:* simple to run and reason about, but contexts share a process and a schema,
+   and `common` has some inward coupling (see the module diagram), so a future extraction
+   into services is not free.
+
+---
+
+## API overview
+
+Base path `/api/v1`. Success responses use the envelope
+`{ "success": true, "message": <string|null>, "data": <payload>, "timestamp": <instant> }`;
+errors are sanitized by `GlobalExceptionHandler`. Mutating requests (`POST/PUT/PATCH/DELETE`
+under `/api/`) require an `X-Idempotency-Key` header (missing → `400`); when
+`CATALOG_REQUIRE_API_KEY=true` they also require `X-Api-Key` (missing/invalid → `401`).
+All endpoints are rate limited (`429` with `Retry-After: 60`). Endpoints below are read
+straight from the controllers.
+
+| Context | Endpoints (controller) |
+|---------|------------------------|
+| **Products** (`ProductController`) | `POST /products`, `GET /products/{id}`, `GET /products/slug/{slug}`, `PUT /products/{id}`, `PATCH /products/{id}/status`, `DELETE /products/{id}`, `POST\|DELETE /products/{id}/categories/{categoryId}`, `GET /products/search` (cursor), `GET /products/admin` (paged), `POST /products/bulk-update`, `GET /products/bulk-update/{jobId}` |
+| **Variants** (`VariantController`) | `POST\|GET /products/{productId}/variants`, `GET\|PUT\|DELETE /products/{productId}/variants/{id}`, `PATCH /products/{productId}/variants/{id}/status` |
+| **Brands** (`BrandController`) | `POST\|GET /brands`, `GET /brands/featured`, `GET /brands/{id}`, `GET /brands/slug/{slug}`, `PUT\|DELETE /brands/{id}` |
+| **Categories** (`CategoryController`) | `POST /categories`, `GET /categories/{id}`, `GET /categories/slug/{slug}`, `GET /categories/tree`, `GET /categories/{id}/subtree`, `GET /categories/{id}/children`, `GET /categories/{id}/ancestors`, `PUT\|DELETE /categories/{id}` |
+| **Attributes** (`AttributeController`) | `POST\|GET /attributes/types`, `POST\|GET /attributes/types/{typeId}/values` |
+| **Warehouses** (`WarehouseController`) | `POST\|GET /warehouses`, `GET /warehouses/{id}`, `PUT\|PATCH /warehouses/{id}` |
+| **Inventory** (`InventoryController`) | `POST /inventory`, `GET /inventory/{id}`, `GET /variants/{variantId}/inventory`, `GET /variants/{variantId}/inventory/warehouses/{warehouseId}`, `PATCH /inventory/{id}/stock`, `POST /inventory/reservations`, `POST /inventory/reservations/{id}/complete`, `POST /inventory/reservations/{id}/cancel`, `POST /inventory/transfers` (also `POST /transfers`), `GET /inventory/{inventoryId}/journal` |
+| **Bulk inventory import** (`BulkImportController`) | `POST /inventory/bulk-imports`, `GET /inventory/bulk-imports/{jobId}` |
+| **Ops** (Actuator) | `GET /actuator/health`, `/info`, `/metrics`, `/prometheus` (narrowed to `health,info,prometheus` under `prod`) |
+
+---
+
+## Running locally
+
+Prerequisites: **JDK 21**, **Maven 3.9+** (a repo-local `.tools/apache-maven-3.9.9` is
+present), **Docker** (for Postgres/Redis and for tests).
 
 ```bash
-# 1. Clone
-git clone <repository-url> catalog-api
-cd catalog-api
+# 1. Start backing services (Postgres 16 + Redis 7)
+make docker-up          # docker-compose up -d postgres redis
 
-# 2. Configure environment
-#    Copy .env.example to .env and set your local credentials.
-#    .env is gitignored and is the source of truth for local dev.
-cp .env.example .env
+# 2. Configure environment (copy and edit)
+cp .env.example .env     # DB_URL/DB_USERNAME/DB_PASSWORD, REDIS_*, etc.
 
-# 3. Start PostgreSQL + Redis (docker-compose defines both)
-make docker-up
-#   equivalent to: docker-compose up -d postgres redis
-#   Postgres -> 5432 (db=catalog_db, user=postgres, password=change-me)
-#   Redis    -> 6379
-
-# 4. Run the app
-#    The app requires DB_URL, DB_USERNAME, and DB_PASSWORD to be set.
-#    In IntelliJ, these are configured in the CatalogApplication run configuration.
-#    From CLI, ensure they are exported or provided:
+# 3. Run the app (default profile = local; API-key auth OFF locally)
 mvn spring-boot:run
 
-# 5. Verify it is up
-curl http://localhost:8080/actuator/health
-#    expect: {"status":"UP", ...}
-```
-# 6. Smoke-test a read endpoint
-curl http://localhost:8080/api/v1/categories/tree
+# 4. Smoke test
+curl localhost:8080/actuator/health           # {"status":"UP",...}
+curl localhost:8080/api/v1/categories/tree     # envelope with data: []
 ```
 
-To run the whole stack (app + Postgres + Redis) in containers instead, use `docker-compose up --build` — the `app` service runs with `SPRING_PROFILES_ACTIVE=prod`, which turns API-key auth **on** by default (see Environment Variables).
+Defaults (from `application.yml` / `.env.example`): port `8080`,
+`jdbc:postgresql://localhost:5432/catalog_db`, Redis `localhost:6379`, CORS
+`http://localhost:3000`, `CATALOG_REQUIRE_API_KEY=false`. Full container run
+(`docker-compose up --build`) starts the `app` service with `SPRING_PROFILES_ACTIVE=prod`,
+which turns **API-key auth on** and narrows Actuator exposure.
 
-## Environment Variables
+---
 
-All variables are read from `application.yml` / `application-prod.yml`. Defaults shown are the literal fallbacks in the config.
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `SPRING_PROFILES_ACTIVE` | No | `local` | Active Spring profile (`local`, `prod`, `test`). |
-| `PORT` | No | `8080` | HTTP listen port. |
-| `SPRING_DATASOURCE_URL` | No | `jdbc:postgresql://localhost:5432/catalog_db` | JDBC URL for PostgreSQL. |
-| `SPRING_DATASOURCE_USERNAME` | No | `postgres` | Database username. |
-| `SPRING_DATASOURCE_PASSWORD` | No | _(empty)_ | Database password. |
-| `REDIS_HOST` | No | `localhost` | Redis host. |
-| `REDIS_PORT` | No | `6379` | Redis port. |
-| `REDIS_PASSWORD` | No | _(empty)_ | Redis password. |
-| `CORS_ALLOWED_ORIGINS` | No | `http://localhost:3000` | Allowed CORS origins. |
-| `CATALOG_REQUIRE_API_KEY` | No | `false` (`true` under `prod`) | Enforce `X-Api-Key` on mutating `/api/**` requests. |
-| `CATALOG_API_KEYS` | Conditionally | _(empty)_ | Comma-separated valid API keys. **Required when `CATALOG_REQUIRE_API_KEY=true`** — if empty, mutating requests fail closed (500). |
-| `CATALOG_INVENTORY_RETRY_MAX_ATTEMPTS` | No | `10` | Optimistic-lock retry attempts for inventory writes. |
-| `CATALOG_INVENTORY_RETRY_INITIAL_DELAY_MS` | No | `25` | Initial backoff delay for inventory retries. |
-| `CATALOG_INVENTORY_RETRY_MULTIPLIER` | No | `1.5` | Backoff multiplier for inventory retries. |
-| `CATALOG_BULK_PRODUCT_MAX_FILE_SIZE_BYTES` | No | `10485760` | Max product bulk-import file size. |
-| `CATALOG_BULK_INVENTORY_MAX_FILE_SIZE_BYTES` | No | `10485760` | Max inventory bulk-import file size. |
-| `S3_BUCKET_NAME` | No | _(empty)_ | Object-storage bucket for product media. |
-| `S3_ENDPOINT` | No | _(empty)_ | S3-compatible endpoint URL. |
-| `S3_BASE_URL` | No | _(empty)_ | Public base URL for stored objects. |
-| `AWS_REGION` | No | `us-east-1` | AWS/S3 region. |
-| `AWS_ACCESS_KEY_ID` | No | _(empty)_ | S3 access key. |
-| `AWS_SECRET_ACCESS_KEY` | No | _(empty)_ | S3 secret key. |
-| `TRACING_SAMPLE_RATE` | No | `0.1` | Trace sampling probability. |
-| `OTLP_ENDPOINT` | No | `http://localhost:4318/v1/traces` | OTLP traces endpoint. |
-| `ENVIRONMENT` | No | `prod` | Value of the `environment` metrics tag. |
-| `LOG_LEVEL_CATALOG` | No | `INFO` | Log level for `com.catalog`. |
-
-## API Reference
-
-Base URL: `http://<host>:<port>`. Successful responses use the envelope `{ "success": true, "message": <string|null>, "data": <payload>, "timestamp": <instant> }`. Errors use a sanitized envelope `{ "status", "error", "message", "path", "timestamp", "validationErrors"? }` produced by `GlobalExceptionHandler`.
-
-**Mutating requests (`POST`/`PUT`/`PATCH`/`DELETE`) require an `X-Idempotency-Key` header** (a UUID) — missing it yields `400`. When `CATALOG_REQUIRE_API_KEY=true`, mutating `/api/**` requests also require a valid `X-Api-Key` header (else `401`). All endpoints are rate limited (`429` with `Retry-After: 60` when exceeded).
-
-### Products — `/api/v1/products`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/products` | `CreateProductRequest` | `ProductResponse` | 201, 409, 422 |
-| POST | `/api/v1/products/bulk-update` | multipart: `importSessionId` (UUID), `file` | `BulkProductUpdateJob` | 202 |
-| GET | `/api/v1/products/bulk-update/{jobId}` | — | `BulkProductUpdateJob` | 200, 404 |
-| GET | `/api/v1/products/search` | query params (below) | `CursorPage<ProductCardDto>` | 200 |
-| GET | `/api/v1/products/admin` | query params (below) | `PagedResponse<ProductSummaryResponse>` | 200 |
-| GET | `/api/v1/products/{id}` | — | `ProductResponse` | 200, 404 |
-| GET | `/api/v1/products/slug/{slug}` | — | `ProductResponse` | 200, 404 |
-| PATCH | `/api/v1/products/{id}/status` | `UpdateProductStatusRequest` | `ProductResponse` | 200, 404, 422 |
-| PUT | `/api/v1/products/{id}` | `UpdateProductRequest` | `ProductResponse` | 200, 404, 422 |
-| POST | `/api/v1/products/{id}/categories/{categoryId}` | — | `ProductResponse` | 200, 404 |
-| DELETE | `/api/v1/products/{id}/categories/{categoryId}` | — | `ProductResponse` | 200, 404 |
-| DELETE | `/api/v1/products/{id}` | — | _(message only)_ | 200, 404 |
-
-`search` params: `categoryId`, `brandId`, `minPrice`, `maxPrice`, `attributeValueIds` (set), `inStock`, `search`, `sort` (default `NEWEST`), `cursor`, `pageSize` (1–100, default 20).
-`admin` params: `statuses` (set), `categoryId`, `brandId`, `search`, `page` (default 0), `size` (≤200, default 50), `sort` (default `NEWEST`).
-
-### Variants — `/api/v1/products/{productId}/variants`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/products/{productId}/variants` | `CreateVariantRequest` | `VariantResponse` | 201, 404, 422 |
-| GET | `/api/v1/products/{productId}/variants` | — | `List<VariantSummaryResponse>` | 200, 404 |
-| GET | `/api/v1/products/{productId}/variants/{id}` | — | `VariantResponse` | 200, 404 |
-| PATCH | `/api/v1/products/{productId}/variants/{id}/status` | `UpdateVariantStatusRequest` | `VariantResponse` | 200, 404, 422 |
-| PUT | `/api/v1/products/{productId}/variants/{id}` | `UpdateVariantRequest` | `VariantResponse` | 200, 404, 422 |
-| DELETE | `/api/v1/products/{productId}/variants/{id}` | — | _(message only)_ | 200, 404 |
-
-### Brands — `/api/v1/brands`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/brands` | `CreateBrandRequest` | `BrandResponse` | 201, 409, 422 |
-| GET | `/api/v1/brands` | query: `search`,`active`,`featured`,`country`,`page`,`size`(≤100),`sortBy`,`sortDir` | `PagedResponse<BrandResponse>` | 200 |
-| GET | `/api/v1/brands/featured` | — | `List<BrandSummaryResponse>` | 200 |
-| GET | `/api/v1/brands/{id}` | — | `BrandResponse` | 200, 404 |
-| GET | `/api/v1/brands/slug/{slug}` | — | `BrandResponse` | 200, 404 |
-| PUT | `/api/v1/brands/{id}` | `UpdateBrandRequest` | `BrandResponse` | 200, 404, 422 |
-| DELETE | `/api/v1/brands/{id}` | — | _(message only)_ | 200, 404 |
-
-### Categories — `/api/v1/categories`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/categories` | `CreateCategoryRequest` | `CategoryResponse` | 201, 409, 422 |
-| GET | `/api/v1/categories/{id}` | — | `CategoryResponse` | 200, 404 |
-| GET | `/api/v1/categories/slug/{slug}` | — | `CategoryResponse` | 200, 404 |
-| GET | `/api/v1/categories/tree` | — | `List<CategoryTreeResponse>` | 200 |
-| GET | `/api/v1/categories/{id}/subtree` | — | `CategoryTreeResponse` | 200, 404 |
-| GET | `/api/v1/categories/{id}/children` | — | `List<CategoryResponse>` | 200, 404 |
-| GET | `/api/v1/categories/{id}/ancestors` | — | `List<CategorySummaryResponse>` | 200, 404 |
-| PUT | `/api/v1/categories/{id}` | `UpdateCategoryRequest` | `CategoryResponse` | 200, 404, 422 |
-| DELETE | `/api/v1/categories/{id}` | — | _(message only)_ | 200, 404 |
-
-### Attributes — `/api/v1/attributes`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/attributes/types` | `CreateAttributeTypeRequest` | `AttributeTypeResponse` | 201, 409, 422 |
-| GET | `/api/v1/attributes/types` | — | `List<AttributeTypeResponse>` | 200 |
-| POST | `/api/v1/attributes/types/{typeId}/values` | `CreateAttributeValueRequest` | `AttributeValueResponse` | 201, 404, 409, 422 |
-| GET | `/api/v1/attributes/types/{typeId}/values` | — | `List<AttributeValueResponse>` | 200, 404 |
-
-### Warehouses — `/api/v1/warehouses`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/warehouses` | `CreateWarehouseRequest` | `WarehouseResponse` | 201, 409, 422 |
-| GET | `/api/v1/warehouses` | query: `page`,`size`(≤200) | `PagedResponse<WarehouseResponse>` | 200 |
-| GET | `/api/v1/warehouses/{id}` | — | `WarehouseResponse` | 200, 404 |
-| PUT | `/api/v1/warehouses/{id}` | `UpdateWarehouseRequest` | `WarehouseResponse` | 200, 404, 422 |
-| PATCH | `/api/v1/warehouses/{id}` | `UpdateWarehouseRequest` | `WarehouseResponse` | 200, 404, 422 |
-
-### Inventory — `/api/v1/inventory`, `/api/v1/variants/...`, `/api/v1/transfers`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/inventory` | `CreateInventoryRequest` | `InventoryResponse` | 201 (+`Location`), 422 |
-| GET | `/api/v1/inventory/{id}` | — | `InventoryResponse` | 200, 404 |
-| GET | `/api/v1/variants/{variantId}/inventory` | — | `List<InventoryResponse>` | 200 |
-| GET | `/api/v1/variants/{variantId}/inventory/warehouses/{warehouseId}` | — | `InventoryResponse` | 200, 404 |
-| PATCH | `/api/v1/inventory/{id}/stock` | `AdjustStockRequest` | `InventoryResponse` | 200, 404, 422 |
-| POST | `/api/v1/inventory/reservations` | `CreateReservationRequest` | `ReservationResponse` | 201, 422 |
-| POST | `/api/v1/inventory/reservations/{id}/complete` | — | `ReservationResponse` | 200, 404 |
-| POST | `/api/v1/inventory/reservations/{id}/cancel` | — | `ReservationResponse` | 200, 404 |
-| POST | `/api/v1/inventory/transfers` **or** `/api/v1/transfers` | `TransferStockRequest` | `TransferResponse` | 201, 404, 422 |
-| GET | `/api/v1/inventory/{inventoryId}/journal` | query: `page`,`size`(≤200) | `PagedResponse<InventoryJournalResponse>` | 200, 404 |
-
-### Bulk inventory import — `/api/v1/inventory/bulk-imports`
-
-| Method | Path | Request Body | Response | Codes |
-|---|---|---|---|---|
-| POST | `/api/v1/inventory/bulk-imports` | multipart: `file`, `importSessionId` (UUID) | `BulkImportJobResponse` | 202 |
-| GET | `/api/v1/inventory/bulk-imports/{jobId}` | — | `BulkImportJobResponse` | 200, 404 |
-
-### Operational endpoints (Actuator)
-
-`GET /actuator/health` (with `liveness`/`readiness` groups), `/actuator/info`, `/actuator/metrics`, `/actuator/prometheus`. Exposure is narrowed to `health,info,prometheus` under the `prod` profile.
-
-## Database
-
-Schema is managed by Flyway migrations `V1`–`V17` under `src/main/resources/db/migration`. Extensions enabled (`V1`): `pgcrypto`, `pg_trgm`, `unaccent`, `pg_stat_statements`.
-
-| Table | Purpose | Notable columns / constraints |
-|---|---|---|
-| `categories` | Category tree (materialized path) | `path`, `depth`, `parent_id`; unique `uq_categories_slug` |
-| `brands` | Brands | unique `uq_brands_slug`, `uq_brands_name` |
-| `products` | Products | `status`, `slug`, `brand_id`, `primary_category_id`; unique `uq_products_slug` |
-| `product_categories` | Product↔secondary-category join | — |
-| `attribute_types` / `attribute_values` | Attribute taxonomy | unique `uq_attribute_types_name`, `uq_attribute_values_type_value` |
-| `variants` | SKU-level variants | unique `uq_variants_internal_sku`, `uq_variants_merchant_sku` |
-| `variant_attribute_values` | Variant↔attribute-value join | — |
-| `warehouses` | Warehouses | partial unique `uq_warehouses_code` (active rows) |
-| `inventory` | Stock per (variant, warehouse) | partial unique `uq_inventory_variant_warehouse_active`; quantity CHECK constraints |
-| `inventory_reservations` | Stock reservations | partial unique `uq_ir_active_inventory_reference`; FK `ir_inventory_fk` |
-| `inventory_journal` | Append-only inventory audit log | `operation_type`, before/after/delta quantities |
-| `product_images` / `variant_images` | Media metadata | partial unique primary-image indexes |
-| `product_search_projection` | Denormalized search read model | `searchable_text TSVECTOR`; GIN-indexed |
-| `bulk_import_jobs` / `product_bulk_jobs` | Async import job tracking | unique session indexes |
-| `orders` / `order_line_items` | Order records + reservation idempotency | created in `V12` |
-
-Indexing highlights:
-- **GIN full-text**: `idx_psp_searchable_text` on `product_search_projection.searchable_text` (`TSVECTOR`).
-- **GIN trigram** (`gin_trgm_ops`): `idx_products_name_trgm`, `idx_brands_name_trgm`, `idx_categories_name_trgm`, `idx_psp_name_trgm`.
-- **Partial B-tree** for soft-delete & hot paths: `idx_inventory_variant_id`, `idx_inventory_warehouse_id`, `idx_inventory_low_stock`, `idx_ir_active_expired`, `idx_warehouses_active`, plus the partial unique indexes above.
-- **Cursor pagination**: `idx_psp_created_at_cursor`, `idx_products_status_created_at`.
-
-## Running Tests
+## Testing
 
 ```bash
-# Unit + integration tests + merged JaCoCo coverage (Docker daemon must be running)
-mvn clean verify -Ddependency-check.skip=true
-
-# Unit (surefire) tests only
-mvn test
+mvn clean verify -Ddependency-check.skip=true   # unit + integration + merged coverage
+mvn test                                        # unit tests only
+mvn verify                                       # add the OWASP CVE gate (CVSS >= 7 fails)
 ```
 
-OWASP dependency-check is wired into the `verify` lifecycle; pass `-Ddependency-check.skip=true` for fast local runs.
+Integration tests (`*IT`) use Testcontainers and **require a running Docker daemon**;
+they start `postgres:16-alpine` automatically. The merged JaCoCo report is written to
+`target/site/jacoco-merged/index.html`.
 
-Integration tests (`*IT`) use **Testcontainers**, which requires a running Docker daemon — they start a `postgres:16-alpine` container automatically (no manual DB setup needed). `@SpringBootTest` ITs share a single Testcontainers Postgres instance (singleton-container pattern) and truncate all tables before each test for isolation; repository slice tests (`@DataJpaTest`) start their own container.
+**Current numbers — from `mvn clean verify` on this HEAD (2026-07-07), not a prior report:**
 
-Coverage: the merged JaCoCo report (unit + integration) is written to **`target/site/jacoco-merged/index.html`** — open it in a browser after `mvn verify`.
+| Metric | Value |
+|--------|-------|
+| Build | `BUILD SUCCESS` (~2 min) |
+| Unit tests (surefire) | **109**, 0 failures / 0 errors / 0 skipped |
+| Integration tests (failsafe) | **129**, 0 failures / 0 errors / 0 skipped |
+| Instruction coverage (merged) | **74.1 %** (11,720 / 15,816) |
+| Branch coverage (merged) | **60.6 %** (594 / 981) |
+| Line coverage (merged) | **74.3 %** (2,537 / 3,413) |
+| Method coverage (merged) | **58.3 %** (714 / 1,224) |
 
-## Key Design Decisions
+Coverage excludes generated sources (QueryDSL `Q*`, MapStruct `*MapperImpl`,
+`CatalogApplication`) — see the JaCoCo config in `pom.xml`.
 
-- **Clean architecture by bounded context.** Each context isolates `api`/`application`/`domain`/`infrastructure`. The tradeoff is more packages/boilerplate (and MapStruct mappers between DTOs and entities) in exchange for domain logic with no Spring/web dependencies, unit-testable in isolation. Entities never leak past the `api` layer — controllers return record DTOs only.
+**Honestly weak areas** (from the per-package JaCoCo report — do not read the headline
+74 % as uniform):
+- **Media pipeline** is largely untested — `media.domain` 0 %, `media.product.application`
+  ~2 %, `media.config` ~5 %. The S3/image path has the least coverage in the codebase.
+- **Some application services are thin** — `attribute.application` and `category.application`
+  ~4 %.
+- **Request/response DTO records, domain event records, and observability filters** are at
+  or near 0 % (`*.api.dto.request/response`, `*.event`, `observability.filter` ~7 %).
+- **Method coverage (58 %) is the weakest headline metric** — many entity/DTO accessors and
+  glue methods are never exercised.
+- Well-covered: controllers, core `product`/`inventory` services, repositories, and the
+  concurrency/transfer/reservation paths.
 
-- **PostgreSQL GIN indexes for search.** Name/fuzzy search uses `pg_trgm` GIN indexes and the read model uses a `TSVECTOR` GIN index, rather than adding a separate engine (Elasticsearch/OpenSearch). For a single-store catalog this avoids the operational cost and dual-write consistency problems of an external index while still giving sub-linear full-text and trigram search. A denormalized `product_search_projection` keeps query-time joins off the hot path.
+---
 
-- **Atomic Redis token-bucket rate limiting.** `RateLimitingFilter` consumes tokens via a single atomic Redis operation (`RedisTokenBucketRateLimiter.tryConsume`) keyed per client/path/method, tiered (reads 100/min, writes 20/min, bulk 5/min). A non-atomic "read count, compare, then increment" approach has a check-then-act race: two concurrent requests both read a count under the limit and both proceed, allowing bursts past the cap. Doing the decrement-and-test atomically server-side closes that window. If Redis is unavailable the filter fails open to a Bucket4j in-memory fallback rather than rejecting traffic.
+## Known limitations
 
-- **Virtual threads (Java 21).** `spring.threads.virtual.enabled=true` runs request handling on virtual threads. This API is I/O-bound (PostgreSQL, Redis, S3), so virtual threads service many concurrent blocking requests without a large OS-thread pool, improving throughput under concurrency while keeping straightforward blocking JDBC code.
+These are real and current on this branch. Sourced from the code and from
+[`PRR_AUDIT_2026-07.md`](PRR_AUDIT_2026-07.md); a README that lists none on a system like
+this would be the actual red flag.
 
-- **Soft delete with partial unique indexes.** Rows carry `deleted_at`; "active" queries filter `deleted_at IS NULL`. Uniqueness (brand slug, warehouse code, one inventory row per variant+warehouse) is enforced by *partial* unique indexes scoped to non-deleted rows. This preserves history and lets a slug/code be reused after the original is soft-deleted, which a plain unique constraint would forbid.
+- **Inventory journal immutability is convention, not enforced.** `InventoryJournal.java`
+  and `db/migration/V8` *comment* that `UPDATE`/`DELETE` are revoked for the app DB user,
+  but **no `REVOKE`, trigger, or rule exists in any migration**. A direct SQL
+  `UPDATE`/`DELETE` by the application role is not prevented at the database layer; the
+  append-only guarantee currently rests on the service only ever inserting.
+- **`order` subsystem is dead code.** `order/application/OrderService.java` has no
+  controller and no callers; the `orders` / `order_line_items` tables (`V12`) are never
+  written by any API path. Either wire it or delete it and the migration weight.
+- **Actuator is over-exposed outside `prod`.** Base `application.yml` exposes
+  `env,loggers` with `show-details: always`; only `application-prod.yml` narrows to
+  `health,info,prometheus`. Actuator is unauthenticated (`ApiKeyAuthFilter` guards only
+  `/api/`), so any non-`prod` instance reachable on a network can leak config via
+  `/actuator/env`.
+- **API-key auth exempts all reads.** `ApiKeyAuthFilter` skips `GET/HEAD/OPTIONS` even
+  when `require-api-key=true`, so every read endpoint is unauthenticated. This is fine
+  only if a gateway enforces read auth; if this is the sole control, catalog data is
+  world-readable.
+- **Image processing holds a DB transaction across S3 + decode.**
+  `media/product/application/ImageProcessingService.java:31` runs `@Transactional` around
+  `verifyAndGetMetadata` / `openStream` / `ImageIO.read`, pinning a Hikari connection for
+  the whole network + CPU call. Concurrent uploads during storage slowness can starve the
+  pool. (S3 timeouts and a circuit breaker exist and bound the call; the transaction
+  coupling does not.)
+- **Search-result cache silently drops on deserialization drift.**
+  `ProductSearchCacheService` catches a failed deserialize of a cached `CursorPage`, evicts
+  the entry, and refetches from the DB — correct and safe, but it means a change to
+  `ProductCardDto`/`CursorPage` shape invalidates cached entries invisibly. Cursor pages and
+  `inStock` queries are deliberately **not cached**.
+- **`ReservationCleanupJob` has no distributed lock.** The `@Scheduled` cleanup runs on
+  every instance; correctness is preserved by a locked re-check, but it is duplicated work
+  across a cluster (a `ShedLock` would remove it).
+- **Rate limiting fails open to per-node buckets.** If Redis is down, `RateLimitingFilter`
+  falls back to in-memory Bucket4j buckets, so the effective limit becomes per-instance
+  rather than global.
+- **Coverage is uneven**, per [Testing](#testing) — the media pipeline especially.
 
-- **Optimistic locking with bounded retry for inventory.** Inventory writes use JPA `@Version` optimistic locking and retry on conflict with exponential backoff (`CATALOG_INVENTORY_RETRY_*`). Under hot-SKU contention this avoids row locks/deadlocks while still guaranteeing no lost updates; the append-only `inventory_journal` records every quantity change for auditability.
+---
 
-- **Idempotent mutations.** `IdempotencyFilter` requires an `X-Idempotency-Key` (UUID) on every mutation and caches the response in Redis, replaying it (with `X-Idempotency-Replayed: true`) on retries — so client retries after a network blip don't double-create resources or double-apply stock changes.
+## Roadmap
 
-## Further Reading
-- [ARCHITECTURE.md](ARCHITECTURE.md) — Deep dive into design decisions.
-- [API.md](API.md) — Full endpoint documentation.
-- [AUDIT_REPORT.md](AUDIT_REPORT.md) — Audit findings, fixes, and verification record.
-- [docs/adr/](docs/adr/) — Architecture Decision Records.
+Genuinely planned / not yet built (kept separate from the feature list on purpose):
+
+- Enforce journal immutability at the database layer (actual `REVOKE`/trigger, matching the
+  existing comments), or drop the DB-level claim.
+- Resolve the `order` subsystem (wire an `OrderController` or remove the module + `V12`
+  tables).
+- Move image S3/CPU work outside the DB transaction (`processImage` restructure) and add a
+  retry path so a transient storage outage does not permanently mark images `FAILED`.
+- Add a distributed lock (`ShedLock`) to scheduled cleanup.
+
+---
+
+## Repository docs
+
+- [`DOCS_AUDIT_2026-07.md`](DOCS_AUDIT_2026-07.md) — the claim-by-claim audit + changelog behind this README.
+- [`PRR_AUDIT_2026-07.md`](PRR_AUDIT_2026-07.md) — pre-launch review findings and their status.
+- [`docs/adr/`](docs/adr) — accepted architecture decision records.
+- [`SECURITY.md`](SECURITY.md), [`DEPLOYMENT.md`](DEPLOYMENT.md), [`DEVELOPMENT.md`](DEVELOPMENT.md), [`TESTING.md`](TESTING.md).

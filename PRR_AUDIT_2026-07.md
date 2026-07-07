@@ -1,5 +1,14 @@
 # Production Readiness Review — catalog-api (2026-07-06)
 
+> **Partly superseded (2026-07-07 docs audit).** Two figures below are now stale: the
+> coverage/test numbers (this review: ~40 % instr, 109 tests) were re-measured at
+> **74.1 % instr / 60.6 % branch, 238 tests** — see [`README.md`](README.md#testing). And
+> finding **[M4]** (idempotency "not atomic, fails open") has since been **implemented** —
+> `IdempotencyFilter` now uses an atomic `SET NX` claim with an explicit per-endpoint
+> Redis-down policy. The remaining open findings (M3-residual, m6–m10, n11–n12) are still
+> valid. Single source of truth for current status: [`DOCS_AUDIT_2026-07.md`](DOCS_AUDIT_2026-07.md).
+
+
 Pre-launch PRR. Findings verified against source, not docs. Two of the four
 "HIGH" items in the pre-existing `AUDIT_REPORT.md` were already fixed in code
 (S3 circuit breaker present; virtual threads enabled) — they are stale and are
