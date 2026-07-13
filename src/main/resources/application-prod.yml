@@ -6,6 +6,8 @@ spring:
     show-sql: false
 
 management:
+  server:
+    port: 9001   # separate from public web port; not routed by Render -> /actuator/** unreachable from internet
   endpoints:
     web:
       exposure:
