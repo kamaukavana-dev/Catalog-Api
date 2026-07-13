@@ -1,4 +1,7 @@
 spring:
+  datasource:
+    password: your_db_password
+
   jpa:
     show-sql: false # Disable basic SQL logging; P6Spy handles it
     properties:
