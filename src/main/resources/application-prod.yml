@@ -12,8 +12,8 @@ management:
         include: health,info,prometheus
   endpoint:
     health:
-      show-details: never
-      show-components: never
+      show-details: always
+      show-components: always
 
 logging:
   level:
